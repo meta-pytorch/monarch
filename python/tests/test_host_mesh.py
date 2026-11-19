@@ -45,6 +45,7 @@ from monarch._rust_bindings.monarch_hyperactor.shape import Point, Shape, Slice
 from monarch._rust_bindings.monarch_hyperactor.testing import _handle_observer_count
 from monarch._src.actor.actor_mesh import (
     _client_context,
+    _context,
     Actor,
     ActorError,
     attach,
@@ -1604,6 +1605,9 @@ def test_root_client_does_not_leak_host_meshes() -> None:
         mock_get_client_context.side_effect = orig_get_client_context
 
         def sync_sleep_then_context():
+            # Free-threaded 3.14 threads inherit the creator's context by
+            # default; clear it so each thread takes the fresh-context path.
+            _context.set(None)
             time.sleep(0.1)
             context()
 

@@ -155,6 +155,7 @@ fn as_static_str(to_leak: &str) -> &'static str {
 }
 
 #[pyclass(
+    frozen,
     subclass,
     module = "monarch._rust_bindings.monarch_hyperactor.telemetry"
 )]
@@ -173,7 +174,7 @@ impl PyCounter {
         }
     }
 
-    fn add(&mut self, value: u64, attributes: Option<std::collections::HashMap<String, String>>) {
+    fn add(&self, value: u64, attributes: Option<std::collections::HashMap<String, String>>) {
         let kv_attributes: Vec<opentelemetry::KeyValue> = match attributes {
             Some(attrs) => attrs
                 .into_iter()
@@ -185,7 +186,7 @@ impl PyCounter {
     }
 }
 
-#[pyclass(module = "monarch._rust_bindings.monarch_hyperactor.telemetry")]
+#[pyclass(frozen, module = "monarch._rust_bindings.monarch_hyperactor.telemetry")]
 struct PyGauge {
     inner: metrics::Gauge<f64>,
 }
@@ -215,6 +216,7 @@ impl PyGauge {
 }
 
 #[pyclass(
+    frozen,
     subclass,
     module = "monarch._rust_bindings.monarch_hyperactor.telemetry"
 )]
@@ -233,11 +235,7 @@ impl PyHistogram {
         }
     }
 
-    fn record(
-        &mut self,
-        value: f64,
-        attributes: Option<std::collections::HashMap<String, String>>,
-    ) {
+    fn record(&self, value: f64, attributes: Option<std::collections::HashMap<String, String>>) {
         let kv_attributes: Vec<opentelemetry::KeyValue> = match attributes {
             Some(attrs) => attrs
                 .into_iter()
@@ -250,6 +248,7 @@ impl PyHistogram {
 }
 
 #[pyclass(
+    frozen,
     subclass,
     module = "monarch._rust_bindings.monarch_hyperactor.telemetry"
 )]
@@ -268,7 +267,7 @@ impl PyUpDownCounter {
         }
     }
 
-    fn add(&mut self, value: i64, attributes: Option<std::collections::HashMap<String, String>>) {
+    fn add(&self, value: i64, attributes: Option<std::collections::HashMap<String, String>>) {
         let kv_attributes: Vec<opentelemetry::KeyValue> = match attributes {
             Some(attrs) => attrs
                 .into_iter()

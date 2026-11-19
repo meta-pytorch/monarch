@@ -21,6 +21,7 @@
 #include <torch/csrc/autograd/input_buffer.h> // @manual=//caffe2:torch_extension
 #include <torch/csrc/autograd/python_cpp_function.h> // @manual=//caffe2:torch_extension
 #include <torch/csrc/autograd/python_function.h> // @manual=//caffe2:torch_extension
+#include <torch/csrc/utils/pythoncapi_compat.h> // @manual=//caffe2:torch_extension
 #include <torch/extension.h> // @manual=//caffe2:torch_extension
 
 #define TORCH_VERSION_NEWER_THAN(major, minor, patch)                   \
@@ -615,6 +616,29 @@ struct GradientGenerator {
 
 struct PyGradientGenerator {
   PyObject_HEAD GradientGenerator* obj;
+  bool in_use;
+};
+
+// Critical sections can be suspended by Python callbacks or blocking calls.
+// Keep an in-use flag across those calls to prevent overlapping operations.
+struct PyGradientGeneratorGuard {
+  explicit PyGradientGeneratorGuard(PyGradientGenerator* self) : self_(self) {
+    bool acquired;
+    Py_BEGIN_CRITICAL_SECTION(self_);
+    acquired = !self_->in_use;
+    self_->in_use = true;
+    Py_END_CRITICAL_SECTION();
+    TORCH_CHECK(acquired, "gradient generator is already in use");
+  }
+
+  ~PyGradientGeneratorGuard() {
+    Py_BEGIN_CRITICAL_SECTION(self_);
+    self_->in_use = false;
+    Py_END_CRITICAL_SECTION();
+  }
+
+ private:
+  PyGradientGenerator* self_;
 };
 
 // shared_ptr<Node> in older PyTorch, intrusive_ptr<Node> in newer PyTorch
@@ -651,7 +675,7 @@ std::optional<Edge> parseEdge(PyObject* obj) {
   return std::nullopt;
 }
 
-static int PyGradientGenerator_init(
+static int PyGradientGenerator_init_impl(
     PyGradientGenerator* self,
     PyObject* args,
     PyObject* kwds) {
@@ -683,8 +707,12 @@ static int PyGradientGenerator_init(
   }
   Py_ssize_t num_roots = PyList_Size(roots_list);
   for (Py_ssize_t i = 0; i < num_roots; i++) {
-    PyObject* item = PyList_GetItem(roots_list, i);
-    auto edge = parseEdge(item);
+    auto item =
+        py::reinterpret_steal<py::object>(PyList_GetItemRef(roots_list, i));
+    if (!item) {
+      return -1;
+    }
+    auto edge = parseEdge(item.ptr());
     if (!edge) {
       PyErr_SetString(
           PyExc_TypeError,
@@ -700,8 +728,12 @@ static int PyGradientGenerator_init(
   }
   Py_ssize_t num_edges = PyList_Size(with_respect_to_list);
   for (Py_ssize_t i = 0; i < num_edges; i++) {
-    PyObject* item = PyList_GetItem(with_respect_to_list, i);
-    auto edge = parseEdge(item);
+    auto item = py::reinterpret_steal<py::object>(
+        PyList_GetItemRef(with_respect_to_list, i));
+    if (!item) {
+      return -1;
+    }
+    auto edge = parseEdge(item.ptr());
     if (!edge) {
       PyErr_SetString(
           PyExc_TypeError,
@@ -724,7 +756,12 @@ static int PyGradientGenerator_init(
       return -1;
     }
     for (Py_ssize_t i = 0; i < num_grad_roots; i++) {
-      PyObject* tensor_obj = PyList_GetItem(grad_roots_list, i);
+      auto tensor = py::reinterpret_steal<py::object>(
+          PyList_GetItemRef(grad_roots_list, i));
+      if (!tensor) {
+        return -1;
+      }
+      PyObject* tensor_obj = tensor.ptr();
       if (!Py_IsNone(tensor_obj)) {
         if (!THPVariable_Check(tensor_obj)) {
           PyErr_SetString(
@@ -747,9 +784,21 @@ static int PyGradientGenerator_init(
       return [it = std::move(it)]() mutable { it++; };
     };
   }
-  self->obj = new GradientGenerator(
+  auto obj = std::make_unique<GradientGenerator>(
       std::move(roots), std::move(with_respect_to), std::move(restore_context));
+  std::unique_ptr<GradientGenerator> previous(self->obj);
+  self->obj = obj.release();
   return 0;
+  END_HANDLE_TH_ERRORS_RET(-1);
+}
+
+static int PyGradientGenerator_init(
+    PyGradientGenerator* self,
+    PyObject* args,
+    PyObject* kwds) {
+  HANDLE_TH_ERRORS
+  PyGradientGeneratorGuard guard(self);
+  return PyGradientGenerator_init_impl(self, args, kwds);
   END_HANDLE_TH_ERRORS_RET(-1);
 }
 static void PyGradientGenerator_dealloc(PyGradientGenerator* self) {
@@ -761,7 +810,7 @@ static PyMethodDef PyGradientGenerator_methods[] = {
     {NULL} /* Sentinel */
 };
 
-static PyObject* PyGradientGenerator_iter(PyObject* self) {
+static PyObject* PyGradientGenerator_iter_impl(PyObject* self) {
   HANDLE_TH_ERRORS
   PyGradientGenerator* pyObj = reinterpret_cast<PyGradientGenerator*>(self);
   pyObj->obj->iter();
@@ -770,7 +819,7 @@ static PyObject* PyGradientGenerator_iter(PyObject* self) {
   END_HANDLE_TH_ERRORS
 }
 
-static PyObject* PyGradientGenerator_iternext(PyObject* self) {
+static PyObject* PyGradientGenerator_iternext_impl(PyObject* self) {
   HANDLE_TH_ERRORS
   PyGradientGenerator* pyObj = reinterpret_cast<PyGradientGenerator*>(self);
   std::optional<at::Tensor> value;
@@ -786,6 +835,20 @@ static PyObject* PyGradientGenerator_iternext(PyObject* self) {
     PyErr_SetNone(PyExc_StopIteration);
     return NULL;
   }
+  END_HANDLE_TH_ERRORS
+}
+
+static PyObject* PyGradientGenerator_iter(PyObject* self) {
+  HANDLE_TH_ERRORS
+  PyGradientGeneratorGuard guard(reinterpret_cast<PyGradientGenerator*>(self));
+  return PyGradientGenerator_iter_impl(self);
+  END_HANDLE_TH_ERRORS
+}
+
+static PyObject* PyGradientGenerator_iternext(PyObject* self) {
+  HANDLE_TH_ERRORS
+  PyGradientGeneratorGuard guard(reinterpret_cast<PyGradientGenerator*>(self));
+  return PyGradientGenerator_iternext_impl(self);
   END_HANDLE_TH_ERRORS
 }
 
@@ -820,7 +883,7 @@ static int gradientmodule_exec(PyObject* m) {
 static PyModuleDef_Slot gradientmodule_slots[] = {
     {Py_mod_exec, (void*)gradientmodule_exec},
 #if PY_VERSION_HEX >= 0x030D0000
-    {Py_mod_gil, Py_MOD_GIL_USED},
+    {Py_mod_gil, Py_MOD_GIL_NOT_USED},
 #endif
     {0, NULL}};
 

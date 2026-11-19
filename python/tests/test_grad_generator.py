@@ -4,7 +4,8 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-# pyre-unsafe
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from unittest import main, TestCase
 
 import torch
@@ -33,6 +34,53 @@ class TestGradIter(TestCase):
 
         print(r)
         self.checkEqual(r, r2)
+
+    def test_failed_reinitialization_preserves_generator(self) -> None:
+        t = torch.ones(2, requires_grad=True)
+        root = (t * 2).sum()
+
+        def restore_context(*args):
+            yield
+
+        def fail_context(*args):
+            raise ValueError("context restoration failed")
+
+        generator = GradientGenerator([root], [t], [], restore_context)
+        with self.assertRaisesRegex(ValueError, "context restoration failed"):
+            generator.__init__([root], [t], [], fail_context)
+
+        self.checkEqual(list(generator), [torch.full_like(t, 2)])
+
+    def test_concurrent_calls_during_callback(self) -> None:
+        t = torch.ones(2, requires_grad=True)
+        root = (t * 2).sum()
+        entered = threading.Event()
+        release = threading.Event()
+        generator = None
+
+        def restore_context(*args):
+            if generator is not None:
+                entered.set()
+                if not release.wait(timeout=10):
+                    raise TimeoutError("callback was not released")
+            yield
+
+        generator = GradientGenerator([root], [t], [], restore_context)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(next, generator)
+            try:
+                self.assertTrue(entered.wait(timeout=10))
+                with self.assertRaisesRegex(RuntimeError, "already in use"):
+                    iter(generator)
+                with self.assertRaisesRegex(RuntimeError, "already in use"):
+                    next(generator)
+                with self.assertRaisesRegex(RuntimeError, "already in use"):
+                    generator.__init__([root], [t], [], restore_context)
+            finally:
+                release.set()
+            self.checkEqual([future.result(timeout=10)], [torch.full_like(t, 2)])
+
+        self.assertEqual(list(generator), [])
 
     def test_pipeline_like(self):
         t = torch.rand(3, 3, requires_grad=True)

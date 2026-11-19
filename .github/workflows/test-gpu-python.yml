@@ -17,7 +17,7 @@ jobs:
     uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.set-matrix.outputs.test-matrix) }}
+      matrix: ${{ fromJSON(needs.set-matrix.outputs.python-test-matrix) }}
     with:
       timeout: 120
       runner: ${{ matrix.runner }}
@@ -25,7 +25,7 @@ jobs:
       gpu-arch-version: ${{ matrix.gpu-arch-version }}
       submodules: recursive
       download-artifact: monarch-${{ matrix.name }}-${{ github.sha }}-py${{ matrix.python-version }}
-      upload-artifact: test-results-gpu-python-${{ matrix.name }}-${{ github.sha }}
+      upload-artifact: test-results-gpu-python-${{ matrix.name }}-${{ github.sha }}-py${{ matrix.python-version }}
       script: |
         # Source common setup functions
         source scripts/common-setup.sh
@@ -35,7 +35,7 @@ jobs:
         python3 scripts/fetch_disabled_tests.py
 
         # Setup test environment
-        setup_test_environment ${{ matrix.python-version }}
+        setup_test_environment "${{ matrix.python-version }}"
 
         # Setup Tensor Engine dependencies
         setup_tensor_engine
