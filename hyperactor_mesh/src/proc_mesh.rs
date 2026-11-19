@@ -33,15 +33,12 @@ use hyperactor::id::Label;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
-use hyperactor_config::Flattrs;
 use hyperactor_config::NonZeroUsize;
 use hyperactor_config::attrs::declare_attrs;
-use hyperactor_remote::ActorSpawner;
-use hyperactor_remote::ActorSpawnerEndpoint;
 use hyperactor_remote::KeepaliveLink;
 use hyperactor_remote::OrphanPolicy;
-use hyperactor_remote::SerializedParams;
 use hyperactor_remote::SupervisionOptions;
+use hyperactor_remote::actor_spawner::SpawnActor;
 use hyperactor_remote::proc_spawner::actor_spawner_uid;
 use hyperactor_telemetry::hash_to_u64;
 use ndslice::Extent;
@@ -56,12 +53,11 @@ use typeuri::Named;
 
 use crate::ActorMesh;
 use crate::ActorMeshRef;
+use crate::DataActorMesh;
+use crate::DataActorMeshRef;
 use crate::Error;
 use crate::HostMeshRef;
 use crate::ValueMesh;
-use crate::actor_mesh::ACTOR_MESH_ID;
-use crate::actor_mesh::ActorMeshStopHandle;
-use crate::actor_mesh::DataMeshDisplayName;
 use crate::actor_mesh::notify_mesh_created;
 use crate::casting::CAST_POINT;
 use crate::host_mesh::GET_PROC_STATE_MAX_IDLE;
@@ -129,6 +125,9 @@ declare_attrs! {
     pub attr GET_ACTOR_STATE_MAX_IDLE: Duration = Duration::from_secs(30);
 }
 
+/// The name of the mesh formed by a proc mesh's actor spawners.
+const ACTOR_SPAWNER_MESH_NAME: &str = "actor_spawners";
+
 /// Returns the telemetry `meshes.id` value for an actor mesh.
 pub fn telemetry_actor_mesh_id(proc_mesh_id: &ProcMeshId, actor_mesh_id: &ActorMeshId) -> u64 {
     hash_to_u64(&(proc_mesh_id, actor_mesh_id))
@@ -169,7 +168,7 @@ impl ProcRef {
     }
 
     /// Return the actor spawner hosted by this proc.
-    pub(crate) fn spawner(&self) -> ActorRef<ActorSpawner> {
+    pub(crate) fn spawner(&self) -> ActorRef<SpawnActor> {
         ActorRef::attest(self.proc_id.actor_addr_uid(actor_spawner_uid()))
     }
 
@@ -907,24 +906,20 @@ impl ProcMeshRef {
     /// `actor_mesh_id` identifies the mesh and its members, and must be an
     /// instance id. `supervision_display_name` names the actors in telemetry.
     ///
-    /// This initiates an actor spawn on each proc and constructs a stoppable
-    /// data mesh from the actor refs and local supervisor handles without
-    /// waiting for the remote supervision sessions to link. The mesh is usable
-    /// immediately: each proc queues messages for its actor until the actor
-    /// starts. If a request cannot be initiated, all previously created local
-    /// supervisors receive a best-effort stop request.
+    /// This spawns through each proc's actor spawner without waiting for the
+    /// actors to start; see [`DataActorMeshRef::spawn`].
     ///
     /// Bounds:
     /// - `A: Actor` - the actor actually runs inside each proc.
     /// - `A: Referable` - so we can return typed `ActorRef<A>`s inside the `ActorMesh`.
     /// - `A::Params: RemoteMessage` - spawn parameters must be serializable and routable.
-    pub async fn spawn_data<A: RemoteSpawn, C: context::Actor>(
+    pub fn spawn_data<A: RemoteSpawn, C: context::Actor>(
         &self,
         cx: &C,
         actor_mesh_id: ActorMeshId,
         params: &A::Params,
         supervision_display_name: Option<String>,
-    ) -> crate::Result<ActorMesh<A>>
+    ) -> crate::Result<DataActorMesh<A>>
     where
         A::Params: RemoteMessage,
     {
@@ -933,80 +928,15 @@ impl ProcMeshRef {
                 "data-backed actor meshes require instance ids"
             )));
         }
-        let region = self.region().clone();
-        if self.ranks.is_empty() {
-            return Err(Error::ConfigurationError(anyhow::anyhow!(
-                "cannot spawn an empty actor mesh"
-            )));
-        }
         let actor_type = Remote::collect()
             .name_of::<A>()
             .ok_or(Error::ActorTypeNotRegistered(type_name::<A>().to_string()))?
             .to_string();
-        let mut members = Vec::with_capacity(self.ranks.len());
-        let mut stop_handles = Vec::with_capacity(self.ranks.len());
-        let serialized_params = SerializedParams::<A>::new(params)?;
-        let (liveness, options) = data_mesh_supervision();
-        let display_name = DataMeshDisplayName::new(
-            supervision_display_name
-                .clone()
-                .unwrap_or_else(|| actor_mesh_id.to_string()),
-            region.clone(),
-        );
-
-        let stop_spawned = |handles: &[ActorMeshStopHandle], reason: &str| {
-            for handle in handles {
-                let _ = handle.stop(reason);
-            }
-        };
-
-        // Each call only schedules a local supervisor that sends a one-way spawn
-        // request. No rank waits for another rank's remote actor initialization.
-        for (rank, proc_ref) in self.ranks.iter().enumerate() {
-            let point = region
-                .extent()
-                .point_of_rank(rank)
-                .expect("proc mesh rank must have a point");
-            let mut environment = cx.instance().actor_environment().clone();
-            if let Err(error) = environment.set(CAST_POINT, point.clone()) {
-                stop_spawned(&stop_handles, "data mesh spawn failed");
-                return Err(Error::Other(error.into()));
-            }
-            // The actor's own environment carries its point, but supervision
-            // events are raised on the spawner's side, so they need a copy.
-            // TODO: unify the actor environment and supervision labels.
-            let actor_display_name = display_name.at_point(&point);
-            let mut labels = Flattrs::new();
-            labels.set(CAST_POINT, point);
-            labels.set(ACTOR_MESH_ID, actor_mesh_id.clone());
-            let actor_spawner = proc_ref.spawner();
-            let (actor_ref, stop_handle) = match actor_spawner.spawn_uid_with_link_and_ready(
-                cx,
-                actor_mesh_id.uid().clone(),
-                serialized_params.clone(),
-                liveness.clone(),
-                options.clone(),
-                None,
-                environment,
-                labels,
-                Some(actor_display_name),
-            ) {
-                Ok(spawned) => spawned,
-                Err(error) => {
-                    stop_spawned(&stop_handles, "data mesh spawn failed");
-                    return Err(Error::Other(error));
-                }
-            };
-            members.push(actor_ref);
-            stop_handles.push(stop_handle.into_any());
-        }
-
-        let mesh = ActorMesh::try_new_data(
+        let mesh = self.spawners().spawn(
+            cx,
             actor_mesh_id.clone(),
-            region,
-            members,
-            stop_handles,
-            display_name,
+            params,
+            supervision_display_name.clone(),
         )?;
         self.notify_actor_mesh_created(
             telemetry_data_actor_mesh_id(actor_mesh_id.uid()),
@@ -1015,6 +945,16 @@ impl ProcMeshRef {
             supervision_display_name.as_deref(),
         );
         Ok(mesh)
+    }
+
+    /// The actor spawners of this mesh's procs, in rank order.
+    pub fn spawners(&self) -> DataActorMeshRef<SpawnActor> {
+        DataActorMeshRef::try_new(
+            ActorMeshId::singleton(Label::strip(ACTOR_SPAWNER_MESH_NAME)),
+            self.region().clone(),
+            self.ranks.iter().map(ProcRef::spawner).collect(),
+        )
+        .expect("proc mesh has one proc per rank")
     }
 
     /// Spawn an actor on all procs in this mesh under the given
@@ -1033,9 +973,10 @@ impl ProcMeshRef {
     /// - `A::Params: RemoteMessage` - spawn parameters must be
     ///   serializable and routable.
     /// - `C::A: Handler<MeshFailure>` - in order to spawn actors,
-    ///   the actor must accept messages of type `MeshFailure`. This
-    ///   is delivered when the actors spawned in the mesh have a failure that
-    ///   isn't handled.
+    ///   the actor must accept messages of type `MeshFailure`. Managed
+    ///   meshes deliver unhandled failures this way. Data meshes deliver them
+    ///   to the owner's `handle_supervision_event`. Observe a
+    ///   mesh without owning it with [`ActorMeshRef::next_supervision_event`].
     #[hyperactor::instrument(fields(
         host_mesh=self.host_mesh_id().map(|id| id.to_string()),
         proc_mesh=self.id.to_string(),
@@ -1134,8 +1075,7 @@ impl ProcMeshRef {
         if hyperactor_config::global::get(USE_DIRECT_SPAWN) && actor_mesh_id.uid().is_instance() {
             return self
                 .spawn_data(cx, actor_mesh_id, params, supervision_display_name)
-                .await
-                .map(SpawnedActorMesh::Data);
+                .map(|mesh| SpawnedActorMesh::Data(mesh.into()));
         }
 
         let (mesh, statuses) = self
@@ -1639,6 +1579,8 @@ mod tests {
     #[cfg(fbcode_build)]
     use crate::ActorMeshRef;
     #[cfg(fbcode_build)]
+    use crate::DataActorMesh;
+    #[cfg(fbcode_build)]
     use crate::ValueMesh;
     #[cfg(fbcode_build)]
     use crate::actor_mesh::notify_mesh_created;
@@ -1756,14 +1698,13 @@ mod tests {
             .await
             .expect("spawn proc mesh");
 
-        let mut actor_mesh: ActorMesh<testactor::TestActor> = proc_mesh
+        let mut actor_mesh: DataActorMesh<testactor::TestActor> = proc_mesh
             .spawn_data(
                 instance,
                 ActorMeshId::instance(Label::strip("default_spawner")),
                 &(),
                 None,
             )
-            .await
             .expect("spawn data actor mesh through default spawner");
         assert_eq!(actor_mesh.region().num_ranks(), 2);
         let actor_uids: HashSet<_> = actor_mesh
@@ -1807,24 +1748,16 @@ mod tests {
             _ = tokio::task::yield_now() => {}
         }
         let mut actor_mesh_clone = actor_mesh.clone();
-        actor_mesh
-            .stop(instance, "test complete".to_string())
-            .expect("stop data actor mesh");
+        actor_mesh.stop("test complete".to_string());
         let failure = tokio::time::timeout(Duration::from_secs(10), supervision)
             .await
-            .expect("timed out waiting for the data mesh ref to observe owner stop")
-            .expect("data mesh ref supervision should remain available");
+            .expect("timed out waiting for the data mesh ref to observe owner stop");
         assert!(
             failure.event.actor_status.is_terminal(),
             "owner stop should remain visible as a terminal status to refs"
         );
-        actor_mesh_clone
-            .stop(instance, "test complete".to_string())
-            .expect("stopping a data actor mesh clone should be idempotent");
-        actor_mesh
-            .wait_for_terminal(instance)
-            .await
-            .expect("wait for data actor mesh to stop");
+        actor_mesh_clone.stop("test complete".to_string());
+        actor_mesh.wait_for_terminal(instance).await;
         let outcomes = actor_mesh.monitor(instance).wait_all_terminal().await;
         assert!(
             outcomes.iter().all(|outcome| matches!(
@@ -1850,14 +1783,13 @@ mod tests {
             .expect("spawn proc mesh");
 
         let before = testactor::SerializeCountingParams::times_serialized();
-        let mut actor_mesh: ActorMesh<testactor::SerializeCountingActor> = proc_mesh
+        let mut actor_mesh: DataActorMesh<testactor::SerializeCountingActor> = proc_mesh
             .spawn_data(
                 instance,
                 ActorMeshId::instance(Label::strip("serialize_once")),
                 &testactor::SerializeCountingParams,
                 None,
             )
-            .await
             .expect("spawn data actor mesh");
         assert_eq!(
             testactor::SerializeCountingParams::times_serialized() - before,
@@ -1865,13 +1797,8 @@ mod tests {
             "spawning on 4 ranks should serialize the params once, not once per rank"
         );
 
-        actor_mesh
-            .stop(instance, "test complete".to_string())
-            .expect("stop data actor mesh");
-        actor_mesh
-            .wait_for_terminal(instance)
-            .await
-            .expect("wait for data actor mesh to stop");
+        actor_mesh.stop("test complete".to_string());
+        actor_mesh.wait_for_terminal(instance).await;
         hm.shutdown(instance)
             .await
             .expect("host mesh shutdown should complete");
@@ -1889,14 +1816,13 @@ mod tests {
             .spawn(instance, "named_data", extent!(gpus = 2), None, None)
             .await
             .expect("spawn proc mesh");
-        let mut actor_mesh: ActorMesh<testactor::TestActor> = proc_mesh
+        let mut actor_mesh: DataActorMesh<testactor::TestActor> = proc_mesh
             .spawn_data(
                 instance,
                 ActorMeshId::instance(Label::strip("named_data")),
                 &(),
                 Some("client.<testactor.TestActor named_data>".to_string()),
             )
-            .await
             .expect("spawn data actor mesh");
         let rank1 = actor_mesh
             .range("gpus", 1..2)
@@ -1916,8 +1842,7 @@ mod tests {
             rank1.next_supervision_event(instance),
         )
         .await
-        .expect("timed out waiting for the lost actor's failure")
-        .expect("supervision event should be available");
+        .expect("timed out waiting for the lost actor's failure");
         assert_eq!(
             failure.event.display_name.as_deref(),
             Some("client.<testactor.TestActor named_data{'hosts': 0/1, 'gpus': 1/2}>"),
@@ -1931,9 +1856,7 @@ mod tests {
             "the failure should report its process's exit status"
         );
 
-        actor_mesh
-            .stop(instance, "test complete".to_string())
-            .expect("stop data actor mesh");
+        actor_mesh.stop("test complete".to_string());
         let _ = hm.shutdown(instance).await;
     }
 
@@ -1948,14 +1871,13 @@ mod tests {
             .spawn(instance, "exited", extent!(gpus = 1), None, None)
             .await
             .expect("spawn proc mesh");
-        let actor_mesh: ActorMesh<testactor::TestActor> = proc_mesh
+        let actor_mesh: DataActorMesh<testactor::TestActor> = proc_mesh
             .spawn_data(
                 instance,
                 ActorMeshId::instance(Label::strip("exited")),
                 &(),
                 None,
             )
-            .await
             .expect("spawn data actor mesh");
         let actor = actor_mesh
             .values()
@@ -2110,14 +2032,13 @@ mod tests {
             .spawn(instance, "telemetry", extent!(gpus = 2), None, None)
             .await
             .expect("spawn proc mesh");
-        let mut actor_mesh: ActorMesh<testactor::TestActor> = proc_mesh
+        let mut actor_mesh: DataActorMesh<testactor::TestActor> = proc_mesh
             .spawn_data(
                 instance,
                 ActorMeshId::instance(Label::strip("telemetry_mesh")),
                 &(),
                 Some("telemetry_mesh<test.TelemetryActor>".to_string()),
             )
-            .await
             .expect("spawn data actor mesh");
         let (port, _replies) = instance.open_port();
         actor_mesh
@@ -2147,13 +2068,8 @@ mod tests {
         assert_eq!(mesh.given_name, "telemetry_mesh");
         assert_eq!(mesh.parent_mesh_id, Some(hash_to_u64(proc_mesh.id())));
 
-        actor_mesh
-            .stop(instance, "test complete".to_string())
-            .expect("stop data actor mesh");
-        actor_mesh
-            .wait_for_terminal(instance)
-            .await
-            .expect("wait for data actor mesh to stop");
+        actor_mesh.stop("test complete".to_string());
+        actor_mesh.wait_for_terminal(instance).await;
         hm.shutdown(instance)
             .await
             .expect("host mesh shutdown should complete");
@@ -2567,28 +2483,26 @@ mod tests {
             .await
             .unwrap();
 
-        let started: ActorMesh<testactor::TestActor> = proc_mesh
+        let started: DataActorMesh<testactor::TestActor> = proc_mesh
             .spawn_data(
                 owner,
                 ActorMeshId::instance(Label::strip("started")),
                 &(),
                 None,
             )
-            .await
             .unwrap();
         started
             .wait_started(owner)
             .await
             .expect("constructed data actors start");
 
-        let failed: ActorMesh<testactor::FailingCreateTestActor> = proc_mesh
+        let failed: DataActorMesh<testactor::FailingCreateTestActor> = proc_mesh
             .spawn_data(
                 owner,
                 ActorMeshId::instance(Label::strip("failed")),
                 &(),
                 None,
             )
-            .await
             .unwrap();
         let error = failed
             .wait_started(owner)
@@ -2619,14 +2533,13 @@ mod tests {
             .spawn(instance, "wait_started_exit", extent!(gpus = 1), None, None)
             .await
             .unwrap();
-        let actor_mesh: ActorMesh<testactor::TestActor> = proc_mesh
+        let actor_mesh: DataActorMesh<testactor::TestActor> = proc_mesh
             .spawn_data(
                 owner,
                 ActorMeshId::instance(Label::strip("exited")),
                 &(),
                 None,
             )
-            .await
             .unwrap();
         actor_mesh
             .cast(
@@ -2728,7 +2641,7 @@ mod tests {
         let (reply, mut replies) = root
             .instance
             .open_port::<testactor::ActorEnvironmentObservation>();
-        let mut actor_mesh: ActorMesh<testactor::ActorEnvironmentProbe> = proc_mesh
+        let mut actor_mesh: DataActorMesh<testactor::ActorEnvironmentProbe> = proc_mesh
             .spawn_data(
                 &root.instance,
                 ActorMeshId::instance(Label::strip("direct_spawn_probe")),
@@ -2739,7 +2652,6 @@ mod tests {
                 },
                 None,
             )
-            .await
             .expect("spawn direct environment probes");
 
         let mut seen = HashSet::new();
@@ -2773,13 +2685,8 @@ mod tests {
             );
         }
 
-        actor_mesh
-            .stop(&root.instance, "test complete".to_string())
-            .expect("stop direct environment probes");
-        actor_mesh
-            .wait_for_terminal(&root.instance)
-            .await
-            .expect("wait for direct environment probes to stop");
+        actor_mesh.stop("test complete".to_string());
+        actor_mesh.wait_for_terminal(&root.instance).await;
         hm.shutdown(&root.instance)
             .await
             .expect("host mesh shutdown should complete");
@@ -3191,6 +3098,64 @@ mod tests {
             RankedValues::from((0..1, Status::Failed("test failure".to_string()))),
         );
 
+        let _ = hm.shutdown(instance).await;
+    }
+
+    #[async_timed_test(timeout_secs = 120)]
+    #[cfg(fbcode_build)]
+    async fn test_failing_spawn_actor_data_reports_via_supervision() {
+        hyperactor_telemetry::initialize_logging(hyperactor_telemetry::DefaultTelemetryClock {});
+
+        let config = hyperactor_config::global::lock();
+        let _mode = config.override_key(USE_DIRECT_SPAWN, true);
+        let _guard = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(60));
+        let _guard2 = config.override_key(
+            hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
+            Duration::from_secs(60),
+        );
+
+        let instance = testing::instance();
+
+        let mut hm = testing::host_mesh(1).await;
+        let proc_mesh = hm
+            .spawn(&instance, "test", extent!(gpus = 1), None, None)
+            .await
+            .unwrap();
+        let mut actor_mesh: ActorMesh<testactor::FailingCreateTestActor> = proc_mesh
+            .spawn(instance, "testfail_data", &())
+            .await
+            .expect("data spawn returns before remote initialization");
+        assert!(
+            actor_mesh.as_managed().is_none(),
+            "direct spawn should return a data mesh"
+        );
+
+        let failure = tokio::time::timeout(
+            Duration::from_secs(30),
+            actor_mesh.next_supervision_event(instance),
+        )
+        .await
+        .expect("timed out waiting for init failure supervision event")
+        .expect("supervision event should be available");
+        assert_eq!(
+            failure.actor_mesh_name,
+            Some(actor_mesh.id().to_string()),
+            "init failure should name the spawned mesh"
+        );
+        assert_eq!(failure.crashed_ranks, vec![0]);
+        assert!(
+            failure.event.actor_status.is_failed(),
+            "init failure should report a failed status, got {}",
+            failure.event.actor_status
+        );
+
+        actor_mesh
+            .stop(instance, "test complete".to_string())
+            .expect("stop data actor mesh after init failure");
+        actor_mesh
+            .wait_for_terminal(instance)
+            .await
+            .expect("wait for data actor mesh to stop after init failure");
         let _ = hm.shutdown(instance).await;
     }
 

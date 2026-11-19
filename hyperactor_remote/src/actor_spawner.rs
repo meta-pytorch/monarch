@@ -326,10 +326,6 @@ pub trait ActorSpawnerEndpoint {
         // We can safely compute the resulting actor ref: by definition it
         // will be on the same proc as the actor spawner itself, and we use a
         // Uid to identify it.
-        anyhow::ensure!(
-            uid.is_instance(),
-            "ActorSpawner-spawned actors cannot be singletons"
-        );
         let actor_ref = ActorRef::attest(
             self.endpoint_location()
                 .actor_addr()
