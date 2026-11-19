@@ -417,6 +417,7 @@ impl Core {
     /// Return Pending while work is running or another observer is unpickling.
     /// For a finished operation, return the stored outcome or producer-loss
     /// status.
+    #[inline]
     pub(super) fn observe_or_drive(self: &Arc<Self>) -> Observation {
         let mut state = self.lock();
         let observed = match &mut *state {

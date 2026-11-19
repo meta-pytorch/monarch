@@ -277,8 +277,8 @@ use pyo3::types::PyType;
 
 pub(crate) use self::asyncio::LoopReadOutcome;
 pub(crate) use self::asyncio::complete_asyncio_future;
-use self::asyncio::schedule_completion;
-use self::asyncio::spawn_arrival_wake;
+use self::asyncio::complete_ready;
+use self::asyncio::register_pending;
 use self::core::Core;
 use self::core::Observation;
 pub(crate) use self::core::Publisher;
@@ -286,7 +286,6 @@ use self::core::Running;
 use self::core::State;
 use self::core::WaitOutcome;
 use self::core::wait_observed;
-use self::core::wait_terminal;
 pub(crate) use self::outcome::Reconstruct;
 use self::outcome::ReconstructionFailurePolicy;
 pub use self::outcome::WouldBlockRuntime;
@@ -304,6 +303,7 @@ use self::produce::spawn_producer;
 use self::receive::DeferredReceive;
 pub(crate) use self::receive::ReceiveOutcome;
 use self::receive::drive_inline;
+#[cfg(doc)]
 use crate::handle_wake::LoopWake;
 use crate::runtime::GilSite;
 use crate::runtime::get_tokio_runtime;
@@ -679,43 +679,8 @@ impl PyHandle {
     /// an ordinary unpickle exception becomes the shared result (HDL-27).
     #[pyo3(signature = (timeout = None))]
     fn get(slf: PyRef<'_, Self>, py: Python<'_>, timeout: Option<f64>) -> PyResult<Py<PyAny>> {
-        // HDL-6: among the observers, get() is the sole WouldBlockRuntime
-        // raiser. It is the blocking API, and in a Tokio runtime context
-        // blocking would panic the runtime, so refuse unconditionally -- even
-        // a ready value -- keying the outcome to context, not producer timing.
-        if is_in_tokio_runtime() {
-            return Err(WouldBlockRuntime::new_err(
-                "get() cannot be called from a Tokio runtime context; use poll() or as_asyncio()",
-            ));
-        }
-
-        // HDL-12: validate the timeout up front, so an invalid value raises
-        // ValueError deterministically rather than only when the handle happens
-        // to be pending. Reject negative/NaN/non-finite rather than panicking in
-        // Duration::from_secs_f64.
-        let duration = timeout
-            .map(|seconds| {
-                std::time::Duration::try_from_secs_f64(seconds)
-                    .map_err(|e| PyValueError::new_err(format!("invalid timeout {seconds}: {e}")))
-            })
-            .transpose()?;
-
-        // Warn regardless of readiness: get() is a blocking call, and calling it
-        // from a running asyncio loop is the anti-pattern being flagged whether or
-        // not the value happens to be ready this time (a later call may block and
-        // freeze the loop). Under a warnings-as-errors filter this escalates to an
-        // error -- the caller's chosen strictness for the anti-pattern.
-        if !running_loop_or_none(py).call0()?.is_none() {
-            let category = py.get_type::<PyUserWarning>();
-            PyErr::warn(
-                py,
-                &category,
-                c"Blocking get() was called from a running asyncio event loop. It is a synchronous, blocking call that can freeze the loop and deadlock; use as_asyncio() (or await) instead.",
-                // Python code reaches get() through a wrapper such as
-                // `Future.get()`; level 2 names the wrapper's caller.
-                2,
-            )?;
-        }
+        // Reject Tokio calls, validate the timeout, and warn on a running asyncio loop.
+        let duration = check_blocking_get(py, timeout)?;
 
         // Context, timeout and warning checks have all succeeded. A rejected
         // get() returns above without starting any receive (HDL-24).
@@ -736,29 +701,9 @@ impl PyHandle {
             // get()'s value or error. A timeout or interrupt hands work to Tokio.
             Observation::Drive(drive) => return drive_inline(py, &core, drive, duration),
         };
+        // Use a ready result; otherwise wait here with the GIL released.
         let observed = match observed.into_wait_outcome() {
-            None => {
-                // Work is already running elsewhere. This future only waits for
-                // its shared result; it neither starts nor polls the producer.
-                // Moving core into it keeps this get() counted as an observer.
-                // Return a raw claim to this thread rather than reconstructing
-                // while detached. This get() uses the GIL it reacquires below.
-                let wait = wait_observed(core);
-                // Poll the waiter here with the GIL released, without spawning a
-                // waiter task. Timeout or Ctrl-C drops this waiter, not a running
-                // producer; no observation error is stored as its result (HDL-12).
-                match duration {
-                    // Limit this wait. An elapsed deadline becomes TimeoutError;
-                    // producer loss is returned as an observation below.
-                    Some(duration) => signal_safe_block_on_inline(py, async move {
-                        tokio::time::timeout(duration, wait)
-                            .await
-                            .map_err(|_| PyTimeoutError::new_err(()))
-                    })??,
-                    // No deadline; Python's main thread still checks for signals.
-                    None => signal_safe_block_on_inline(py, wait)?,
-                }
-            }
+            None => wait_inline(py, core, duration)?,
             Some(ready) => ready,
         };
         // Core.state's mutex is no longer held. This thread has the GIL; the
@@ -833,94 +778,14 @@ impl PyHandle {
         // unstarted port/stream receive on Tokio (HDL-24). It releases
         // Core.state's mutex before we read or publish any Python result here.
         match slf.core.observe().into_wait_outcome() {
-            Some(observed @ (WaitOutcome::Done(_) | WaitOutcome::Reconstruct(_))) => {
-                // An available raw reply is reconstructed on this loop thread.
-                // Another observer's claim instead returns Pending below, so
-                // the loop never waits for that observer while holding the GIL.
-                let outcome = reconstruct_observed(
-                    py,
-                    observed,
-                    ReconstructionFailurePolicy::KeepReplyAfterInterrupt,
-                )?;
-                // Clone the Handle's stored value or exception under the GIL,
-                // without consuming the core's result.
-                match clone_shared_outcome(py, &outcome) {
-                    // false selects asyncio.Future.set_result(value).
-                    Ok(value) => complete_asyncio_future(&fut, false, value)?,
-                    // true selects set_exception. into_value() gives the helper
-                    // the Python exception object represented by this PyErr.
-                    Err(err) => complete_asyncio_future(&fut, true, err.into_value(py).into_any())?,
-                }
-                // Return the already-completed asyncio future. No native waiter
-                // task or loop wake-channel registration is needed (HDL-22).
-                return Ok(fut);
-            }
-            Some(WaitOutcome::Lost) => {
-                // The producer ended without publishing. Complete the asyncio
-                // future with that RuntimeError; awaiting it raises the error,
-                // rather than waiting for a result that will never arrive.
-                let err = handle_producer_ended_error();
-                complete_asyncio_future(&fut, true, err.into_value(py).into_any())?;
-                return Ok(fut);
-            }
-            // Not ready: continue below to register a loop wakeup and start a
+            // Return the already-completed asyncio future. No native waiter
+            // task or loop wake-channel registration is needed (HDL-22).
+            Some(ready) => complete_ready(py, &fut, ready)?,
+            // Not ready: register a loop wakeup and start a
             // native waiter for the result. Any deferred receive was started by
             // observe(), not by this waiter.
-            None => {}
+            None => register_pending(py, slf, &event_loop, &fut)?,
         }
-        // Reuse or install this loop's shared pipe-based wake channel. None means
-        // the loop lacks add_reader support or cannot be weakly referenced; other
-        // installation failures propagate instead of silently falling back.
-        if let Some(channel) = LoopWake::for_loop(py, &event_loop)? {
-            // The waiter task retains the core through arrival (HDL-23).
-            let core = slf.core.clone();
-            // Associate this asyncio future with its Handle in the channel's table.
-            // slf.into() gives the entry an owned Python reference to the Handle.
-            // The notifier carries only a registration token and native wake state.
-            let notifier = LoopWake::register(&channel, &fut, slf.into())?;
-            // Without the GIL or a claim, wait for an outcome or raw bytes, then
-            // queue the token and make the pipe readable. The loop thread reads,
-            // or rebuilds, the result and completes fut (HDL-17).
-            spawn_arrival_wake(core, notifier);
-            // Return now; the loop callback will complete the asyncio future.
-            return Ok(fut);
-        }
-
-        // HDL-21: without a pipe channel, the Tokio waiter must acquire the GIL
-        // and use call_soon_threadsafe to queue completion on the loop thread.
-        // Retain a native observer through completion (HDL-23). Already-decoded
-        // results need no GIL while waiting; a raw reply is reconstructed and
-        // settled on this worker before completion is scheduled.
-        let wait = wait_terminal(slf.core.clone());
-        // Retain owned references to the same loop and future, not borrowed Bounds,
-        // so the task can use them after this binding call returns.
-        let loop_handle = event_loop.clone().unbind();
-        let fut_handle = fut.clone().unbind();
-
-        get_tokio_runtime().spawn(async move {
-            // Wait for a final Python outcome, or report producer loss.
-            // A raw reply is unpickled and stored on this worker first;
-            // already-decoded results take no GIL during this wait.
-            let outcome = wait.await;
-            let scheduled = monarch_with_gil(GilSite::Convert, move |py| {
-                // wait_terminal() has released Core.state's mutex. Under the GIL,
-                // clone the stored value or error. and_then leaves a producer-loss
-                // error unchanged (HDL-9/HDL-10).
-                let result = outcome.and_then(|outcome| clone_shared_outcome(py, &outcome));
-                // Queue complete_asyncio_future with this value or exception via
-                // loop.call_soon_threadsafe. This schedules the setter; it does
-                // not change the asyncio future from the Tokio worker thread.
-                schedule_completion(py, loop_handle.bind(py), fut_handle.bind(py), result)
-            })
-            .await;
-            if let Err(err) = scheduled {
-                // Scheduling can fail, for example if the loop closed meanwhile.
-                // Report that failure rather than panic in the observer task.
-                tracing::warn!("as_asyncio: failed to schedule completion on the loop: {err}");
-            }
-        });
-
-        // The caller observes this future; completion happens later on its loop.
         Ok(fut)
     }
 
@@ -934,6 +799,84 @@ impl PyHandle {
     fn __class_getitem__(cls: &Bound<'_, PyType>, _arg: Py<PyAny>) -> Py<PyAny> {
         cls.clone().unbind().into()
     }
+}
+
+/// Check that a blocking `get()` may run in this calling context, and parse its
+/// timeout (`None` for no limit). The timeout's clock starts only when `get()`
+/// begins to wait or to drive a receive. `get()` runs these checks before it
+/// touches the Handle's state, so a rejected call starts nothing.
+fn check_blocking_get(
+    py: Python<'_>,
+    timeout: Option<f64>,
+) -> PyResult<Option<std::time::Duration>> {
+    // HDL-6: among the observers, get() is the sole WouldBlockRuntime
+    // raiser. It is the blocking API, and in a Tokio runtime context
+    // blocking would panic the runtime, so refuse unconditionally -- even
+    // a ready value -- keying the outcome to context, not producer timing.
+    if is_in_tokio_runtime() {
+        return Err(WouldBlockRuntime::new_err(
+            "get() cannot be called from a Tokio runtime context; use poll() or as_asyncio()",
+        ));
+    }
+
+    // HDL-12: validate the timeout up front, so an invalid value raises
+    // ValueError deterministically rather than only when the handle happens
+    // to be pending. Reject negative/NaN/non-finite rather than panicking in
+    // Duration::from_secs_f64.
+    let duration = timeout
+        .map(|seconds| {
+            std::time::Duration::try_from_secs_f64(seconds)
+                .map_err(|e| PyValueError::new_err(format!("invalid timeout {seconds}: {e}")))
+        })
+        .transpose()?;
+
+    // Warn regardless of readiness: get() is a blocking call, and calling it
+    // from a running asyncio loop is the anti-pattern being flagged whether or
+    // not the value happens to be ready this time (a later call may block and
+    // freeze the loop). Under a warnings-as-errors filter this escalates to an
+    // error -- the caller's chosen strictness for the anti-pattern.
+    if !running_loop_or_none(py).call0()?.is_none() {
+        let category = py.get_type::<PyUserWarning>();
+        PyErr::warn(
+            py,
+            &category,
+            c"Blocking get() was called from a running asyncio event loop. It is a synchronous, blocking call that can freeze the loop and deadlock; use as_asyncio() (or await) instead.",
+            // Python code reaches get() through a wrapper such as
+            // `Future.get()`; level 2 names the wrapper's caller.
+            2,
+        )?;
+    }
+
+    Ok(duration)
+}
+
+/// Wait on the calling thread for work already running elsewhere, and return
+/// its outcome or this observer's claim on a raw reply.
+fn wait_inline(
+    py: Python<'_>,
+    core: Arc<Core>,
+    duration: Option<std::time::Duration>,
+) -> PyResult<WaitOutcome> {
+    // Work is already running elsewhere. This future only waits for
+    // its shared result; it neither starts nor polls the producer.
+    // Moving core into it keeps this get() counted as an observer.
+    // Return a raw claim to this thread rather than reconstructing
+    // while detached. This get() uses the GIL it reacquires afterwards.
+    let wait = wait_observed(core);
+    // Poll the waiter here with the GIL released, without spawning a
+    // waiter task. Timeout or Ctrl-C drops this waiter, not a running
+    // producer; no observation error is stored as its result (HDL-12).
+    Ok(match duration {
+        // Limit this wait. An elapsed deadline becomes TimeoutError;
+        // producer loss is returned as an observation.
+        Some(duration) => signal_safe_block_on_inline(py, async move {
+            tokio::time::timeout(duration, wait)
+                .await
+                .map_err(|_| PyTimeoutError::new_err(()))
+        })??,
+        // No deadline; Python's main thread still checks for signals.
+        None => signal_safe_block_on_inline(py, wait)?,
+    })
 }
 
 /// Register the permanent Handle Python bindings.
