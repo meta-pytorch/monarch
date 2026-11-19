@@ -1161,6 +1161,8 @@ mod tests {
     }
 
     #[test]
+    // TODO: OSS: GitHub's Linux CI containers have no IPv6 loopback: Os { code: 99, kind: AddrNotAvailable, message: "Cannot assign requested address" }
+    #[cfg_attr(not(fbcode_build), ignore)]
     fn routed_udp_splits_transit_aggregates_larger_than_a_send_slot() {
         let destination_socket = socket();
         let destination_address = destination_socket
@@ -1187,6 +1189,8 @@ mod tests {
     }
 
     #[test]
+    // TODO: OSS: GitHub's Linux CI containers have no IPv6 loopback: Os { code: 99, kind: AddrNotAvailable, message: "Cannot assign requested address" }
+    #[cfg_attr(not(fbcode_build), ignore)]
     fn routed_udp_preserves_completion_owned_gso_and_gro() {
         let config = config();
         let receiver_socket = socket();
@@ -1250,6 +1254,8 @@ mod tests {
     }
 
     #[test]
+    // TODO: OSS: GitHub's Linux CI containers have no IPv6 loopback: Os { code: 99, kind: AddrNotAvailable, message: "Cannot assign requested address" }
+    #[cfg_attr(not(fbcode_build), ignore)]
     fn routed_udp_forwards_nonlocal_cids_inside_the_completion_owner() {
         let config = config();
         let destination_socket = socket();
