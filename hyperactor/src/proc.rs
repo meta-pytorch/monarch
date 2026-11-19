@@ -626,7 +626,9 @@ const MAX_TERMINAL_STATUS_SUBSCRIBERS: usize = 100;
 /// Shard count for maps owned by a single actor. These maps are small and
 /// rarely contended, but `DashMap::new` sizes shards by core count (512 on a
 /// 96-core host), so each map would cost a large zeroed allocation per actor.
-const ACTOR_MAP_SHARDS: usize = 16;
+/// Each shard is a cache-padded lock (128 bytes), and an actor owns six such
+/// maps, so this stays small.
+const ACTOR_MAP_SHARDS: usize = 4;
 
 /// Create an empty map owned by a single actor; see [`ACTOR_MAP_SHARDS`].
 pub(crate) fn actor_map<K: Eq + Hash, V>() -> DashMap<K, V> {
