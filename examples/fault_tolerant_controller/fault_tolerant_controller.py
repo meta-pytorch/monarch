@@ -10,6 +10,9 @@ Run this file without a role for the keeper; it launches independent Python
 controller bootstraps, which join the private token API. The keeper spawns the
 application Controller actor on each bootstrap's process. Token join itself
 only exchanges references and does not adopt the bootstrap's root actor.
+Controller is the client shutdown boundary: all application children are spawned
+from its context. Other actors on the joining this_proc() are outside that
+boundary; adopting the bootstrap root or process is deferred core work.
 
 The Keeper actor owns each Controller actor. Each Controller owns its trainer
 and generator actor AND process meshes. They run on a borrowed keeper host,

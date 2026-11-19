@@ -6,6 +6,10 @@
 
 """Keep worker state while externally killing supervised controller generations.
 
+Controller is the client shutdown boundary; retained workers belong to Keeper.
+Other actors on the joining this_proc() are outside this ownership policy.
+Adopting its bootstrap root or process is deferred Monarch core work.
+
 Run ``python examples/fault_tolerant_controller/preserved_workers.py --help``.
 See PRESERVED_WORKERS.md for the protocol, topology, and limitations.
 """

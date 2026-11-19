@@ -21,3 +21,6 @@
 
 The keeper and its host stay alive throughout. This example does not attempt
 keeper migration, root adoption, or concurrent controller fencing.
+The Controller actor is the client shutdown boundary: all application children
+come from its context. Other actors on the joining `this_proc()` are ignored;
+adopting that root/process is deferred Monarch core work.

@@ -25,3 +25,6 @@
 
 The implemented model uses independent toy optimizer ledgers on two worker ranks;
 it does not claim a transactional trainer/generator or real optimizer protocol.
+The Controller actor is the client shutdown boundary; retained workers are
+keeper-owned siblings. Unrelated actors on the joining `this_proc()` are ignored.
+Adopting that root/process is deferred Monarch core work.

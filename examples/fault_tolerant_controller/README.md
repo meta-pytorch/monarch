@@ -48,6 +48,13 @@ spawn establishes application supervision. Token join only exchanges actor
 references; the token peer is the bootstrap root, which is never adopted.
 Launching an OS subprocess does not establish Monarch ownership either.
 
+The `Controller` actor is the client shutdown boundary for this example. All
+application children must be spawned from its actor context so stopping it also
+stops their subtree. Other actors on the joining process's `this_proc()`, including
+the independent bootstrap root, are outside this boundary and are ignored by
+this ownership policy. Keeper teardown does not guarantee exit of that entire
+process. Root/process adoption is deferred Monarch core work.
+
 Controller borrows a reference to the keeper's host, then spawns both process
 and actor meshes inside its own endpoint. Borrowing a host does not transfer
 ownership: the actor performing each spawn owns the newly created resource.

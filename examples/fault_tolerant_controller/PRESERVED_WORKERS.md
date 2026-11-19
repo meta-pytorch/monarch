@@ -43,6 +43,13 @@ actor context. Consequently Controller is supervised by Keeper even though its
 OS process was started by `subprocess.Popen`. Connecting a token alone does not
 establish that ownership, and this example does not adopt a bootstrap root.
 
+The `Controller` actor plays the client role. Any children intended to stop with
+that client must be spawned from its actor context. The persistent workers are
+deliberately keeper-owned siblings. Unrelated actors on the joining process's
+`this_proc()`, including its bootstrap root, are outside this shutdown boundary
+and are ignored by this ownership policy. Keeper teardown does not guarantee
+exit of the whole joining process; root/process adoption is deferred core work.
+
 The driver waits for join and observes an outstanding worker request before
 starting a seeded random timer. Timers alternate between short and longer ranges
 so the run exercises both work before commit and committed updates awaiting a
