@@ -748,7 +748,7 @@ pub struct ActorInstance<A: Actor> {
 
 /// Receiver for actor handler work.
 pub struct ActorWorkReceiver<A: Actor> {
-    inner: SequencedReceiver<SequencedEnvelope<WorkCell<A>>>,
+    inner: SequencedReceiver<Box<SequencedEnvelope<WorkCell<A>>>>,
 }
 
 impl<A: Actor> fmt::Debug for ActorWorkReceiver<A> {
@@ -758,7 +758,7 @@ impl<A: Actor> fmt::Debug for ActorWorkReceiver<A> {
 }
 
 impl<A: Actor> ActorWorkReceiver<A> {
-    fn new(inner: SequencedReceiver<SequencedEnvelope<WorkCell<A>>>) -> Self {
+    fn new(inner: SequencedReceiver<Box<SequencedEnvelope<WorkCell<A>>>>) -> Self {
         Self { inner }
     }
 
@@ -3301,7 +3301,11 @@ impl<A: Actor> Instance<A> {
             .inner
             .ports
             .workq
-            .send(SequencedEnvelope::new(SeqInfo::Direct, None, work))
+            .send(Box::new(SequencedEnvelope::new(
+                SeqInfo::Direct,
+                None,
+                work,
+            )))
             .map_err(anyhow::Error::from);
         if result.is_err() {
             account_cancel_enqueue(
@@ -5298,7 +5302,9 @@ pub struct HandlerPorts<A: Actor> {
     ports: DashMap<TypeId, Box<dyn Any + Send + Sync + 'static>>,
     bound: DashMap<Port, &'static str>,
     mailbox: Mailbox,
-    workq: mpsc::UnboundedSender<SequencedEnvelope<WorkCell<A>>>,
+    /// Boxed for the same reason as [`crate::mailbox`]'s sequenced ports: an
+    /// idle actor's work queue holds pointer-sized slots.
+    workq: mpsc::UnboundedSender<Box<SequencedEnvelope<WorkCell<A>>>>,
     enable_buffering: bool,
     /// Per-actor queue depth (PD-5). Shared with `InstanceCellState`.
     queue_depth: Arc<AtomicU64>,
@@ -5309,7 +5315,7 @@ pub struct HandlerPorts<A: Actor> {
 impl<A: Actor> HandlerPorts<A> {
     fn new(
         mailbox: Mailbox,
-        workq: mpsc::UnboundedSender<SequencedEnvelope<WorkCell<A>>>,
+        workq: mpsc::UnboundedSender<Box<SequencedEnvelope<WorkCell<A>>>>,
         enable_buffering: bool,
         queue_depth: Arc<AtomicU64>,
         proc_stats: Arc<ProcQueueStats>,
@@ -5410,7 +5416,7 @@ impl<A: Actor> HandlerPorts<A> {
                     // TODO: return the message contained in the error instead of dropping them when converting
                     // to anyhow::Error. In that way, the message can be picked up by mailbox and returned to sender.
                     let result = workq
-                        .send(SequencedEnvelope::new(seq_info, sender, work))
+                        .send(Box::new(SequencedEnvelope::new(seq_info, sender, work)))
                         .map_err(anyhow::Error::from);
                     if result.is_err() {
                         account_cancel_enqueue(&enqueue_depth, &enqueue_proc_stats, &actor_id);
