@@ -36,7 +36,12 @@ setup_conda_environment() {
     local python_version=${1:-3.11}
     echo "Setting up conda environment with Python ${python_version}..."
     initialize_conda
-    conda create -n venv python="${python_version}" -y
+    if [[ "${python_version}" == *t ]]; then
+        # Free-threaded CPython (e.g. 3.14t) ships on conda-forge as python-freethreading.
+        conda create -n venv -c conda-forge python="${python_version%t}" python-freethreading -y
+    else
+        conda create -n venv python="${python_version}" -y
+    fi
     conda activate venv
     export LD_LIBRARY_PATH="${CONDA_PREFIX}/lib:$LD_LIBRARY_PATH"
     export PATH=/opt/rh/devtoolset-10/root/usr/bin/:$PATH

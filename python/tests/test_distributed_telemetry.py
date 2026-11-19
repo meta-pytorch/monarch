@@ -3532,7 +3532,9 @@ def test_snapshot_schemas_pre_registered() -> None:
     integration invariants in monarch_introspection_snapshot::integration.
     """
     with scoped_state(
-        ProcessJob({"hosts": 1}).enable_telemetry(_sidecar_telemetry_config()),
+        ProcessJob({"hosts": 1}).enable_telemetry(
+            _sidecar_telemetry_config(snapshot_interval_secs=0)
+        ),
         cached_path=None,
     ) as state:
         _assert_sidecar(state)
@@ -3562,9 +3564,7 @@ def test_snapshot_schemas_pre_registered() -> None:
 
         # All snapshot tables should be queryable with 0 rows.
         for table in expected_snapshot_tables:
-            count_result = _query(
-                state, f"SELECT COUNT(*) AS cnt FROM {table} HAVING COUNT(*) = 0"
-            )
+            count_result = _query(state, f"SELECT COUNT(*) AS cnt FROM {table}")
             cnt = count_result["cnt"][0]
             assert cnt == 0, (
                 f"'{table}' should have 0 rows before any capture, got {cnt}"

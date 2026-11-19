@@ -91,16 +91,17 @@ def test_actor_id() -> None:
 
 
 def test_no_hang_on_shutdown() -> None:
-    proc = multiprocessing.Process(target=_shutdown_test_target)
+    # Pin `spawn`: `fork` is unsafe in this threaded process, and the child
+    # must be a direct child so `join` reaps the SIGTERM exit status.
+    proc = multiprocessing.get_context("spawn").Process(target=_shutdown_test_target)
     proc.start()
     pid = proc.pid
     assert pid is not None
 
     os.kill(pid, signal.SIGTERM)
-    time.sleep(2)
-    pid, code = os.waitpid(pid, os.WNOHANG)
-    assert pid > 0
-    assert code == signal.SIGTERM, code
+    proc.join(timeout=10)
+    assert not proc.is_alive()
+    assert proc.exitcode == -signal.SIGTERM, proc.exitcode
 
 
 async def test_proc_mesh() -> None:

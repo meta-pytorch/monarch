@@ -22,6 +22,9 @@ on:
       test-matrix:
         description: Test matrix (one python version per entry)
         value: ${{ jobs.set.outputs.test-matrix }}
+      python-test-matrix:
+        description: Python test matrix (test-matrix plus free-threaded py3.14t, with python-version)
+        value: ${{ jobs.set.outputs.python-test-matrix }}
       build-matrix:
         description: Build matrix (includes all python versions)
         value: ${{ jobs.set.outputs.build-matrix }}
@@ -31,6 +34,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       test-matrix: ${{ steps.set.outputs.test-matrix }}
+      python-test-matrix: ${{ steps.set.outputs.python-test-matrix }}
       build-matrix: ${{ steps.set.outputs.build-matrix }}
     env:
       IS_PUSH: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
@@ -61,6 +65,7 @@ jobs:
           CUDA_PY311='{"name": "cuda", "python-version": "3.11", "docker-image": "pytorch/manylinux2_28-builder:cuda13.0", "torch-spec": "--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu130"}'
           CUDA_PY312='{"name": "cuda", "python-version": "3.12", "docker-image": "pytorch/manylinux2_28-builder:cuda13.0", "torch-spec": "--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu130"}'
           CUDA_PY314='{"name": "cuda", "python-version": "3.14", "docker-image": "pytorch/manylinux2_28-builder:cuda13.0", "torch-spec": "--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu130"}'
+          CUDA_PY314T='{"name": "cuda", "python-version": "3.14t", "docker-image": "pytorch/manylinux2_28-builder:cuda13.0", "torch-spec": "--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu130"}'
           ROCM_100_PY312='{"name": "rocm10.0", "python-version": "3.12", "docker-image": "pytorch/manylinux2_28-builder:rocm10.0", "torch-spec": "--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/rocm10.0/"}'
           ROCM_101_PY312='{"name": "rocm10.1", "python-version": "3.12", "docker-image": "pytorch/manylinux2_28-builder:rocm10.1", "torch-spec": "--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/rocm10.1/"}'
 
@@ -74,9 +79,9 @@ jobs:
           if [[ "$IS_ROCM_TAG" == "true" ]]; then
             BUILD_MATRIX="[$ROCM_100_PY312, $ROCM_101_PY312]"
           elif [[ "$IS_PUSH" == "true" ]]; then
-            BUILD_MATRIX="[$CUDA_PY311, $CUDA_PY312, $CUDA_PY314, $ROCM_100_PY312, $ROCM_101_PY312]"
+            BUILD_MATRIX="[$CUDA_PY311, $CUDA_PY312, $CUDA_PY314, $CUDA_PY314T, $ROCM_100_PY312, $ROCM_101_PY312]"
           else
-            BUILD_MATRIX="[$CUDA_PY311, $CUDA_PY312, $CUDA_PY314]"
+            BUILD_MATRIX="[$CUDA_PY311, $CUDA_PY312, $CUDA_PY314, $CUDA_PY314T]"
           fi
 
           # Test matrix: ROCm tested on a manual ciflow/rocm tag and on pushes
@@ -89,10 +94,21 @@ jobs:
             TEST_MATRIX="[$CUDA]"
           fi
 
+          # Python test matrix: the test matrix (each entry keeps its own
+          # python-version; ROCm stays on 3.12), plus a free-threaded
+          # py3.14t CUDA run so GIL-free regressions surface on PRs.
+          PYTHON_TEST_MATRIX=$(echo "$TEST_MATRIX" | jq -c 'map(if has("python-version") then . else . + {"python-version": "3.11"} end)')
+          if [[ "$IS_ROCM_TAG" != "true" ]]; then
+            PYTHON_TEST_MATRIX=$(echo "$PYTHON_TEST_MATRIX" | jq -c --argjson cuda "$CUDA" '. + [$cuda + {"python-version": "3.14t"}]')
+          fi
+
           # Export matrices to job outputs
           {
             echo 'test-matrix<<EOF'
             echo "{\"include\": $TEST_MATRIX}"
+            echo 'EOF'
+            echo 'python-test-matrix<<EOF'
+            echo "{\"include\": $PYTHON_TEST_MATRIX}"
             echo 'EOF'
             echo 'build-matrix<<EOF'
             echo "{\"include\": $BUILD_MATRIX}"

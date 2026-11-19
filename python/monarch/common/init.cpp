@@ -77,7 +77,7 @@ static int module_exec(PyObject* /* module */) {
 static PyModuleDef_Slot _C_slots[] = {
     {Py_mod_exec, (void*)module_exec},
 #if PY_VERSION_HEX >= 0x030D0000
-    {Py_mod_gil, Py_MOD_GIL_USED},
+    {Py_mod_gil, Py_MOD_GIL_NOT_USED},
 #endif
     {0, NULL}};
 

@@ -98,15 +98,15 @@ def _torch_storage(obj: Any) -> Any:
 # These are used by pickle.rs when torch is loaded to handle
 # torch storage types and dispatch mode disabling.
 _TorchPickler: Any = None
-_torch_pickle_initialized: bool = False
 
 
 def _ensure_torch_pickle() -> None:
     """Lazily initialize torch-aware pickle classes on first use."""
-    global _torch_pickle_initialized, _TorchPickler
-    if _torch_pickle_initialized:
+    global _TorchPickler
+    # Publish `_TorchPickler` only once it is complete, so a concurrent caller
+    # never sees it unset. Racing initializers build equivalent classes.
+    if _TorchPickler is not None:
         return
-    _torch_pickle_initialized = True
 
     import torch
 
