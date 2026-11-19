@@ -37,7 +37,7 @@ use pyo3::types::PyTuple;
 const WAIT: Duration = Duration::from_secs(30);
 
 #[test]
-#[cfg_attr(not(fbcode_build), ignore)]
+#[ignore = "in opt builds the test binary and the Python extension each link hyperactor_mesh, so actor types register twice and the host agent panics"]
 fn python_bootstrap_host_rejects_invalid_via_and_shuts_down() -> Result<()> {
     pyo3::Python::initialize();
 
