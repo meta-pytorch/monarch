@@ -1482,6 +1482,8 @@ mod tests {
     }
 
     #[tokio::test]
+    // TODO: OSS: GitHub's Linux CI containers have no IPv6 loopback: Os { code: 99, kind: AddrNotAvailable, message: "Cannot assign requested address" }
+    #[cfg_attr(not(fbcode_build), ignore)]
     async fn establishes_streams_and_preserves_separate_shutdown_and_join() {
         let directory = TempDir::new().unwrap();
         let issuer = certificate_authority();

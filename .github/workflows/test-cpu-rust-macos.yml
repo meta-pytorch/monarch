@@ -74,6 +74,20 @@ jobs:
             --exclude monarch_cpp_static_libs \
             --exclude monarch_extension \
             --exclude monarch_bench \
+            --exclude chrysalis \
+            --exclude chrysalis-cli \
+            --exclude chrysalis-core \
+            --exclude chrysalis-extension \
+            --exclude chrysalis-identity-meta \
+            --exclude chrysalis-nameserver \
+            --exclude chrysalis-resolver \
+            --exclude chrysalis-scale \
+            --exclude chrysalis-sqlite \
+            --exclude chrysalis-transport \
+            --exclude chrysalis-transport-core \
+            --exclude chrysalis-transport-quiche \
+            --exclude chrysalis-transport-tokio \
+            --exclude chrysalis-transport-uring \
             --exclude monarch_conda
 
       - name: Upload test results

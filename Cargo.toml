@@ -15,6 +15,8 @@ arrow-schema = { version = "57", git = "https://github.com/apache/arrow-rs", rev
 arrow-select = { version = "57", git = "https://github.com/apache/arrow-rs", rev = "fcfe2b4160f6c99107dc89edecdfcd3ff9a4c867" }
 arrow-string = { version = "57", git = "https://github.com/apache/arrow-rs", rev = "fcfe2b4160f6c99107dc89edecdfcd3ff9a4c867" }
 bindgen = { git = "https://github.com/jsgf/rust-bindgen", rev = "4d385d21c160e6ee1f443aeb7e00528a1dc7fd44" }
+boring = { git = "https://github.com/signalapp/boring", rev = "1405df0a23a0335618f88ed328c76f67646b088f" }
+boring-sys = { git = "https://github.com/signalapp/boring", rev = "1405df0a23a0335618f88ed328c76f67646b088f" }
 cxx = { git = "https://github.com/facebookexperimental/cxx.git", rev = "b835645da52253df462725516fbd460ef000d496" }
 cxx-build = { git = "https://github.com/facebookexperimental/cxx.git", rev = "b835645da52253df462725516fbd460ef000d496" }
 opentelemetry = { git = "https://github.com/open-telemetry/opentelemetry-rust", rev = "b998a568632baaa424793a000dfb015f28b5aa5c" }
@@ -22,6 +24,7 @@ opentelemetry-http = { git = "https://github.com/open-telemetry/opentelemetry-ru
 opentelemetry-otlp = { git = "https://github.com/open-telemetry/opentelemetry-rust", rev = "b998a568632baaa424793a000dfb015f28b5aa5c" }
 opentelemetry-proto = { git = "https://github.com/open-telemetry/opentelemetry-rust", rev = "b998a568632baaa424793a000dfb015f28b5aa5c" }
 opentelemetry_sdk = { git = "https://github.com/open-telemetry/opentelemetry-rust", rev = "b998a568632baaa424793a000dfb015f28b5aa5c" }
+quiche = { git = "https://github.com/shayne-fletcher/quiche", rev = "5b2fd7d463c17184673eea7db1e65076aa0952c3" }
 rustls-native-certs = { git = "https://github.com/rustls/rustls-native-certs", rev = "9734b4cc0bfa88224e0fc49867abafa1c56fa28d" }
 wezterm-color-types = { git = "https://github.com/wezterm/wezterm.git", rev = "05343b387085842b434d267f91b6b0ec157e4331" }
 wezterm-dynamic = { git = "https://github.com/wezterm/wezterm.git", rev = "05343b387085842b434d267f91b6b0ec157e4331" }
@@ -36,6 +39,20 @@ wezterm-dynamic-derive = "0.1.1"
 members = [
   "algebra",
   "build_utils",
+  "chrysalis/crates/chrysalis",
+  "chrysalis/crates/chrysalis-cli",
+  "chrysalis/crates/chrysalis-core",
+  "chrysalis/crates/chrysalis-extension",
+  "chrysalis/crates/chrysalis-identity-meta",
+  "chrysalis/crates/chrysalis-nameserver",
+  "chrysalis/crates/chrysalis-resolver",
+  "chrysalis/crates/chrysalis-scale",
+  "chrysalis/crates/chrysalis-sqlite",
+  "chrysalis/crates/chrysalis-transport",
+  "chrysalis/crates/chrysalis-transport-core",
+  "chrysalis/crates/chrysalis-transport-quiche",
+  "chrysalis/crates/chrysalis-transport-tokio",
+  "chrysalis/crates/chrysalis-transport-uring",
   "erased_lifetime",
   "hyper",
   "hyperactor",
@@ -88,6 +105,20 @@ members = [
 default-members = [
   "algebra",
   "build_utils",
+  "chrysalis/crates/chrysalis",
+  "chrysalis/crates/chrysalis-cli",
+  "chrysalis/crates/chrysalis-core",
+  "chrysalis/crates/chrysalis-extension",
+  "chrysalis/crates/chrysalis-identity-meta",
+  "chrysalis/crates/chrysalis-nameserver",
+  "chrysalis/crates/chrysalis-resolver",
+  "chrysalis/crates/chrysalis-scale",
+  "chrysalis/crates/chrysalis-sqlite",
+  "chrysalis/crates/chrysalis-transport",
+  "chrysalis/crates/chrysalis-transport-core",
+  "chrysalis/crates/chrysalis-transport-quiche",
+  "chrysalis/crates/chrysalis-transport-tokio",
+  "chrysalis/crates/chrysalis-transport-uring",
   "erased_lifetime",
   "hyper",
   "hyperactor",

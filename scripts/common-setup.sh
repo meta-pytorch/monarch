@@ -55,6 +55,9 @@ install_system_dependencies() {
     if ! command -v ninja &> /dev/null; then
         dnf install -y ninja-build 2>/dev/null || dnf install -y ninja 2>/dev/null || pip install ninja || echo "Warning: ninja not available, rdma-core build may use make instead"
     fi
+    # boring-sys builds BoringSSL, which requires CMake 3.22 or newer; the x86
+    # builder images ship 3.18.4.
+    pip install "cmake>=3.22,<4"
 }
 
 # Install Node.js and npm (needed to build the dashboard frontend).

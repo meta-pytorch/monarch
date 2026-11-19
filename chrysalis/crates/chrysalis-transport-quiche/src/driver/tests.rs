@@ -1463,7 +1463,6 @@ mod empty_fin_after_acknowledged_data {
     #[test]
     // TODO: OSS: the Cargo build pins quiche without cloudflare/quiche
     // af8788e0, which only the Buck overlay carries, so this fails there.
-    #[cfg_attr(not(fbcode_build), ignore)]
     fn fin_is_resent_when_a_late_ack_follows_its_lost_packet() {
         run(Schedule::LateAckAfterFinLost);
     }
@@ -1471,7 +1470,6 @@ mod empty_fin_after_acknowledged_data {
     #[test]
     // TODO: OSS: the Cargo build pins quiche without cloudflare/quiche
     // af8788e0, which only the Buck overlay carries, so this fails there.
-    #[cfg_attr(not(fbcode_build), ignore)]
     fn fin_is_sent_when_a_late_ack_precedes_its_packet() {
         run(Schedule::LateAckBeforeFinEmitted);
     }

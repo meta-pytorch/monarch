@@ -1014,6 +1014,8 @@ mod tests {
     }
 
     #[tokio::test]
+    // TODO: OSS: GitHub's Linux CI containers have no IPv6 loopback: Os { code: 99, kind: AddrNotAvailable, message: "Cannot assign requested address" }
+    #[cfg_attr(not(fbcode_build), ignore)]
     async fn direct_udp_nodes_publish_and_exchange_streams() {
         let parent_socket = std::net::UdpSocket::bind("[::]:0").expect("bind parent UDP socket");
         let parent_port = parent_socket
