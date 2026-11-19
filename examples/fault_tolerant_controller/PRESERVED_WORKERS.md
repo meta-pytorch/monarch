@@ -6,6 +6,10 @@ outstanding worker calls and lets a fifth controller finish. Two worker actors
 retain their original process IDs, full actor addresses, optimizer values, and
 operation ledgers throughout the restarts.
 
+See the [shared design write-up](RESTARTABLE_CONTROLLERS.md) for the tradeoffs,
+the [checkpoint example](README.md) for whole-subtree recovery, and the
+[implementation plan](PRESERVED_WORKERS_PLAN.md) for this example's scope.
+
 From a checkout with a current Monarch installation:
 
 ```sh
@@ -34,7 +38,7 @@ root client
 
 Keeper also owns the worker process mesh. The token publishes only Keeper. A
 fresh bootstrap connects and sends its `this_proc()` process mesh to
-`Keeper.join`. That endpoint executes `procs.spawn(Controller, ...)` in Keeper's
+`Keeper.join`. That endpoint executes `procs.spawn(name, Controller, ...)` in Keeper's
 actor context. Consequently Controller is supervised by Keeper even though its
 OS process was started by `subprocess.Popen`. Connecting a token alone does not
 establish that ownership, and this example does not adopt a bootstrap root.
@@ -50,8 +54,8 @@ The final generation runs uninterrupted.
 At join, Keeper registers the actual Controller actor address with the workers
 before any work can begin. The kill is unannounced to the workers. Before
 replacement, the driver kills and reaps its OS process, waits for the matching
-Controller mesh failure in `Keeper.__supervise__`, and drains old worker requests. Only then
-does Keeper admit a new controller. This provides a single active controller for
+Controller mesh failure in `Keeper.__supervise__`, and drains old worker requests.
+Only then does Keeper admit a new controller. This provides a single active controller for
 this local hard-kill experiment; it does not fence a partitioned controller that
 remains alive. Data supervision uses a three-second deadline to keep the example
 quick. The driver rejects conflicting delivery or data-supervision environment
@@ -77,22 +81,23 @@ preventing missing or double-applied updates.
 Workers use a delivery-failure hook only for selected recipient-loss and transport
 failures whose destination port belongs to a registered full Controller actor
 address. Controller-directed sends in this worker are replies; Keeper-directed
-status and validation replies retain the default delivery policy. Registration precedes work, so the policy also covers a
-reply that fails before supervision detects the crash. Registration does not prove
+status and validation replies retain the default delivery policy. Registration
+precedes work, so the policy also covers a reply that fails before supervision
+detects the crash. Registration does not prove
 that a recipient died. The hook counts accepted failures, and success requires
 observing at least one. Handler, protocol, unallocated-port, oversized-frame, and
 expiry failures retain Monarch's default policy, as do other actor addresses.
 This application policy permits losing replies to registered sessions; raw
 `PortRef` addresses do not survive process loss, and old reply receivers cannot
-be reused. Replacement calls allocate
-fresh reply receivers.
+be reused. Replacement calls allocate fresh reply receivers.
 
 After training, Keeper starts a long-running worker call and waits until every
 rank confirms it is running. It then deliberately fails the worker actors. The
 already-outstanding mesh call must raise `SupervisionError`, and Keeper must
 receive the worker mesh's failure. This avoids sending new requests to actors
 that are already known to have failed. Unexpected failures are not absorbed. The
-probe fails actors rather than killing their OS processes, which would also fail implicit runtime logging actors.
+probe fails actors rather than killing their OS processes, which would also fail
+implicit runtime logging actors.
 
 ## Limits and cleanup
 
@@ -107,5 +112,6 @@ to endpoints; use this only with trusted processes. All processes must use the
 same Monarch version. The example stops owned processes and shuts down Monarch
 in `finally`. Fallback cleanup signals only recorded worker PIDs that still match
 both their Linux start time and a unique inherited run marker. A final check
-requires those processes to be gone, including on the negative probes. A run that needs emergency SIGKILL cleanup fails. The success marker is
-printed only after explicit shutdown and cleanup checks pass.
+requires those processes to be gone, including on the negative probes. A run that
+needs emergency SIGKILL cleanup fails. The success marker is printed only after
+explicit shutdown and cleanup checks pass.
