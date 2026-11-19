@@ -14,6 +14,7 @@ use std::sync::Weak;
 
 use pyo3::prelude::*;
 use tokio::sync::Notify;
+use tokio::sync::futures::OwnedNotified;
 
 use super::outcome::Reconstruct;
 use super::outcome::ReconstructionFailurePolicy;
@@ -38,36 +39,104 @@ pub(super) enum State {
     Unstarted(DeferredReceive),
     /// No result yet. A Tokio task, an observer running the work inline, or
     /// a Python completer is responsible for supplying it.
-    Running {
-        /// Wake observers waiting for the result. Created only when an observer
-        /// first needs to wait. Completion changes the state before notifying
-        /// the waiters; the notification carries no result itself (HDL-25).
-        wake: Option<Arc<Notify>>,
-        /// Tell a spawned receive to stop when the last Handle or active waiter
-        /// drops the core. Present only for work with ObserverLoss::Stop;
-        /// ordinary producers continue without observers (HDL-23).
-        stop: Option<Arc<Notify>>,
-    },
+    Running(Running),
     /// A successful endpoint reply has arrived, but is still pickled.
-    Raw {
-        /// Retained independently of an attempt, so an interrupted observer
-        /// cannot destroy the bytes needed by the next observer.
-        reply: Arc<dyn Reconstruct>,
-        /// One observer has the sole right to reconstruct and publish (HDL-27).
-        claimed: bool,
-        /// Wake observers waiting for reconstruction to finish (HDL-25).
-        /// Moved from Running if waiters already exist; otherwise created only
-        /// when an observer needs to wait. Releasing the reconstruction claim
-        /// or storing the final value or error wakes them to recheck the state.
-        /// The notification carries no value or error itself.
-        wake: Option<Arc<Notify>>,
-    },
+    Raw(Raw),
     /// The final value or error, never replaced. Every observer shares this
     /// outcome, and reading it does not consume it (HDL-1, HDL-2, HDL-3).
     Done(Arc<PyResult<Py<PyAny>>>),
     /// The producer ended without supplying a result. Observers raise the
     /// producer-ended error rather than waiting indefinitely (HDL-10).
     Lost,
+}
+
+/// The state while the result is still being produced.
+#[derive(Default)]
+pub(super) struct Running {
+    /// Wake observers waiting for the result. Created only when an observer
+    /// first needs to wait. Completion changes the state before notifying
+    /// the waiters; the notification carries no result itself (HDL-25).
+    pub(super) wake: WakeSlot,
+    /// Tell a spawned receive to stop when the last Handle or active waiter
+    /// drops the core. Present only for work with ObserverLoss::Stop;
+    /// ordinary producers continue without observers (HDL-23).
+    stop: Option<Arc<Notify>>,
+}
+
+/// The state while a successful reply waits, still pickled, for the observer
+/// that reconstructs it.
+pub(super) struct Raw {
+    /// Retained independently of an attempt, so an interrupted observer
+    /// cannot destroy the bytes needed by the next observer.
+    reply: Arc<dyn Reconstruct>,
+    /// One observer has the sole right to reconstruct and publish (HDL-27).
+    pub(super) claimed: bool,
+    /// Wake observers waiting for reconstruction to finish (HDL-25).
+    /// Moved from Running if waiters already exist; otherwise created only
+    /// when an observer needs to wait. Releasing the reconstruction claim
+    /// or storing the final value or error wakes them to recheck the state.
+    /// The notification carries no value or error itself.
+    wake: WakeSlot,
+}
+
+impl Raw {
+    /// Claim the sole right to reconstruct this reply (HDL-27), unless another
+    /// observer holds it. Call with Core.state's mutex held, in the same
+    /// critical section as the state check that found this Raw.
+    fn try_claim(&mut self, core: &Arc<Core>) -> Option<ReconstructionClaim> {
+        // The reply has arrived as pickled bytes, not a Python value.
+        // If another observer owns the claim, leave it alone.
+        if self.claimed {
+            return None;
+        }
+        // Take the exclusive right to unpickle while Core.state's
+        // mutex is held, so no second observer can claim the same reply.
+        self.claimed = true;
+        // Return the claim, not a decoded value. The caller unpickles
+        // after it releases the mutex. Dropping an unfinished
+        // claim releases that right and wakes waiting observers.
+        Some(ReconstructionClaim {
+            // Keep the shared core alive throughout this attempt.
+            core: Some(Arc::clone(core)),
+            // Retain the original reply; no byte buffers are copied here.
+            reply: Arc::clone(&self.reply),
+        })
+    }
+}
+
+/// The signal that wakes observers waiting for the state to change (HDL-25).
+///
+/// The Notify is created only when an observer must wait, never by a
+/// transition alone. A waiter registers under the state lock, in the same
+/// critical section as its state check, so a transition cannot slip between
+/// them. Transitions notify after releasing the lock; woken observers recheck
+/// the state, because the notification carries no result.
+#[derive(Clone, Default)]
+pub(super) struct WakeSlot(Option<Arc<Notify>>);
+
+impl WakeSlot {
+    /// Register one waiter, creating the shared Notify for the first.
+    /// Call with Core.state's mutex held.
+    fn register(&mut self) -> OwnedNotified {
+        self.0
+            .get_or_insert_with(|| Arc::new(Notify::new()))
+            .clone()
+            .notified_owned()
+    }
+
+    /// Wake every registered waiter, if any observer created the Notify.
+    /// Call after releasing Core.state's mutex.
+    fn notify(&self) {
+        if let Some(wake) = &self.0 {
+            wake.notify_waiters();
+        }
+    }
+
+    /// How many waiters hold the Notify, or `None` if none was created. For tests.
+    #[cfg(test)]
+    pub(super) fn waiters_for_test(&self) -> Option<usize> {
+        self.0.as_ref().map(|wake| Arc::strong_count(wake) - 1)
+    }
 }
 
 /// The result of checking whether a Handle's outcome is available.
@@ -88,16 +157,31 @@ pub(super) enum Observed {
     Reconstruct(ReconstructionClaim),
 }
 
-/// Where to run a port or stream-reply receive if this observer starts it.
-#[derive(Clone, Copy)]
-pub(super) enum ReceiveExecution {
-    /// observe() starts the receive as a Tokio task.
-    Tokio,
-    /// get() takes the receive to poll on the calling thread.
-    CallingThread,
-    /// Start deferred receives, but leave raw replies for a polled observer.
-    /// Rust observer factories use this before returning their future.
-    StartOnly,
+impl Observed {
+    /// Convert this observation to the outcome a wait would return, or return
+    /// None if it is Pending: only a pending observation needs to wait.
+    /// The conversion takes no lock and cannot fail.
+    pub(super) fn into_wait_outcome(self) -> Option<WaitOutcome> {
+        match self {
+            Self::Done(outcome) => Some(WaitOutcome::Done(outcome)),
+            Self::Lost => Some(WaitOutcome::Lost),
+            Self::Reconstruct(claim) => Some(WaitOutcome::Reconstruct(claim)),
+            Self::Pending => None,
+        }
+    }
+}
+
+/// What a wait for the Handle's outcome ends in. Unlike Observed, never Pending.
+///
+/// A reconstruction claim is not readiness: the observer holding it must
+/// reconstruct the reply before the Handle has its outcome (HDL-27).
+pub(super) enum WaitOutcome {
+    /// The stored value or error, kept alive by the Arc after unlocking.
+    Done(Arc<PyResult<Py<PyAny>>>),
+    /// The producer ended without a result (HDL-10).
+    Lost,
+    /// This observer has the sole right to reconstruct a pickled reply (HDL-27).
+    Reconstruct(ReconstructionClaim),
 }
 
 /// Give one observer the right to unpickle a successful endpoint reply.
@@ -215,20 +299,18 @@ impl Drop for ReconstructionClaim {
         let wake = {
             let mut state = core.lock();
             match &mut *state {
-                State::Raw { claimed, wake, .. } => {
+                State::Raw(raw) => {
                     // Only release exclusive access. Leave the original reply
                     // in Raw so another observer can reconstruct it from scratch.
-                    *claimed = false;
-                    wake.clone()
+                    raw.claimed = false;
+                    raw.wake.clone()
                 }
                 _ => unreachable!("HDL-27: an unfinished claim retains Raw"),
             }
         };
         // The block released Core.state's mutex. Wake observers so they recheck
         // Raw and one can claim the reply; this path stores no value or error.
-        if let Some(wake) = wake {
-            wake.notify_waiters();
-        }
+        wake.notify();
     }
 }
 
@@ -293,102 +375,108 @@ impl Core {
     /// This can start receive work or claim an available raw reply for
     /// reconstruction. It never polls a receive or runs Python here.
     /// Return the shared outcome, loss, Pending or that exclusive claim.
+    #[inline]
     pub(super) fn observe(self: &Arc<Self>) -> Observed {
-        // observe_or_drive() returns either Observation::Observed (an outcome,
-        // Pending, Lost, or a raw-reply reconstruction claim) or
-        // Observation::Drive (a receive future and publisher for this caller
-        // to run). Choose Tokio so an unstarted receive is spawned there,
-        // rather than handed to this caller. That rules out Drive; unwrap
-        // Observation::Observed and return its inner Observed value below.
-        let Observation::Observed(observed) = self.observe_or_drive(ReceiveExecution::Tokio) else {
-            unreachable!("only a driving observation receives the producer");
-        };
-        observed
-    }
-
-    /// Check the shared result, choosing how to start a port or stream-reply
-    /// receive that has not started. The state lock ensures only one observer
-    /// takes its future (HDL-24).
-    ///
-    /// The caller explicitly chooses `execution`; no thread is detected here:
-    ///
-    /// - `get()` passes `ReceiveExecution::CallingThread`: return the receive
-    ///   future and its publisher as `Observation::Drive`. The caller polls
-    ///   that future on its own thread; this function does not poll it.
-    /// - `observe()` passes `ReceiveExecution::Tokio`: spawn the receive as a
-    ///   Tokio task and return `Observation::Observed(Observed::Pending)`.
-    /// - `start()` passes `StartOnly`: start any unstarted receive on Tokio.
-    ///   Leave an already-arrived pickled reply unclaimed. Creating a Rust
-    ///   observer future does not claim it; polling that future may do so.
-    ///
-    /// If a pickled reply is available and nobody has claimed it, give the
-    /// caller the exclusive right to unpickle it. With StartOnly, leave it
-    /// unclaimed and return Pending instead.
-    ///
-    /// Return Pending while work is running or another observer is unpickling.
-    /// For a finished operation, return the stored outcome or producer-loss
-    /// status.
-    pub(super) fn observe_or_drive(self: &Arc<Self>, execution: ReceiveExecution) -> Observation {
         // Keep the lock through the start decision and the move to Running,
         // so another observer cannot take the same receive future.
         let mut state = self.lock();
 
-        // Finished or already started: return its snapshot. Otherwise borrow
-        // the unstarted receive to decide how it will be started below.
-        let deferred = match &mut *state {
-            State::Done(outcome) => return Observation::Observed(Observed::Done(outcome.clone())),
-            State::Lost => return Observation::Observed(Observed::Lost),
-            State::Running { .. } => return Observation::Observed(Observed::Pending),
-            State::Raw { reply, claimed, .. } => {
-                // The reply has arrived as pickled bytes, not a Python value.
-                // If another observer owns the claim, leave it alone. StartOnly
-                // also leaves it alone: constructing a Rust observer future
-                // must not claim its reply before that future is polled.
-                if *claimed || matches!(execution, ReceiveExecution::StartOnly) {
-                    return Observation::Observed(Observed::Pending);
-                }
-                // Take the exclusive right to unpickle while Core.state's
-                // mutex is held, so no second observer can claim the same reply.
-                *claimed = true;
-                // Return the claim, not a decoded value. The caller unpickles
-                // after this function releases the mutex. Dropping an unfinished
-                // claim releases that right and wakes waiting observers.
-                return Observation::Observed(Observed::Reconstruct(ReconstructionClaim {
-                    // Keep the shared core alive throughout this attempt.
-                    core: Some(Arc::clone(self)),
-                    // Retain the original reply; no byte buffers are copied here.
-                    reply: Arc::clone(reply),
-                }));
+        // Finished or already started: return its snapshot. Otherwise read
+        // the unstarted receive's observer-loss policy to start it below.
+        let observer_loss = match &mut *state {
+            State::Done(outcome) => return Observed::Done(outcome.clone()),
+            State::Lost => return Observed::Lost,
+            State::Running(_) => return Observed::Pending,
+            State::Raw(raw) => {
+                return raw
+                    .try_claim(self)
+                    .map_or(Observed::Pending, Observed::Reconstruct);
             }
             // A deferred port receive or stream item has no observer that has
             // started its future yet. A message may already be queued, but this
-            // future has not taken or unpickled it. Borrow the stored receive
-            // here; the code below chooses where to start it and moves it out.
-            State::Unstarted(deferred) => deferred,
+            // future has not taken or unpickled it.
+            State::Unstarted(deferred) => deferred.observer_loss,
         };
+        // The task owns the future and publisher. This caller gets a
+        // Pending snapshot without waiting; completion can race its return.
+        self.spawn_unstarted(state, observer_loss);
+        Observed::Pending
+    }
 
+    /// Check the shared result, or take a port or stream-reply
+    /// receive that has not started. The state lock ensures only one observer
+    /// takes its future (HDL-24).
+    ///
+    /// Only `get()` calls this. For an unstarted receive, return the receive
+    /// future and its publisher as `Observation::Drive`. The caller polls
+    /// that future on its own thread; this function does not poll it.
+    ///
+    /// If a pickled reply is available and nobody has claimed it, give the
+    /// caller the exclusive right to unpickle it.
+    ///
+    /// Return Pending while work is running or another observer is unpickling.
+    /// For a finished operation, return the stored outcome or producer-loss
+    /// status.
+    pub(super) fn observe_or_drive(self: &Arc<Self>) -> Observation {
+        let mut state = self.lock();
+        let observed = match &mut *state {
+            State::Done(outcome) => Observed::Done(outcome.clone()),
+            State::Lost => Observed::Lost,
+            State::Running(_) => Observed::Pending,
+            State::Raw(raw) => raw
+                .try_claim(self)
+                .map_or(Observed::Pending, Observed::Reconstruct),
+            // get() takes both the future and publisher, then polls the future
+            // on its own thread. Nothing is spawned here.
+            //
+            // get() runs the receive itself and keeps the core alive, so no
+            // stop signal is needed now. hand_off() installs one if needed
+            // when a timeout or interrupt moves the receive to Tokio.
+            State::Unstarted(_) => return Observation::Drive(self.take_unstarted(state, None)),
+        };
+        Observation::Observed(observed)
+    }
+
+    /// Ensure an unstarted port or stream-reply receive is started on Tokio.
+    /// Rust waiters call this before waiting for the shared result. If the
+    /// operation is already running or finished, start nothing (HDL-24).
+    /// This neither waits for completion nor consumes the stored result.
+    ///
+    /// Leave an already-arrived pickled reply unclaimed. Creating a Rust
+    /// observer future does not claim it; polling that future may do so.
+    pub(super) fn start(self: &Arc<Self>) {
+        // Start deferred receive work, but never claim raw bytes for a Rust
+        // observer before its returned future is polled.
+        let state = self.lock();
+        let State::Unstarted(deferred) = &*state else {
+            return;
+        };
+        let observer_loss = deferred.observer_loss;
+        self.spawn_unstarted(state, observer_loss);
+    }
+
+    /// Start an unstarted receive as a Tokio task (HDL-24). `state` is the
+    /// guard of the check that found it unstarted; the lock is released before
+    /// the task is scheduled (HDL-9).
+    fn spawn_unstarted(
+        self: &Arc<Self>,
+        state: MutexGuard<'_, State>,
+        observer_loss: ObserverLoss,
+    ) {
         // Create a stop signal only for a receive that will run on Tokio and
         // must stop when its last observer disappears. An inline get() keeps
         // the core alive. If it times out or is interrupted, hand_off() moves
         // the unfinished receive to Tokio so work continues without that get().
         // A later get() can wait for the result; it does not run the receive.
         // hand_off() also installs a stop signal if this receive needs one.
-        let stop = match execution {
-            // get() runs the receive itself and keeps the core alive, so no
-            // stop signal is needed now. hand_off() installs one if needed
-            // when a timeout or interrupt moves the receive to Tokio.
-            ReceiveExecution::CallingThread => None,
+        let stop = match observer_loss {
             // This receive will run on Tokio and must stop if nobody can
             // observe its result. Create the signal that Core::drop() sends
             // when the last Handle or active waiter releases the core.
-            ReceiveExecution::Tokio | ReceiveExecution::StartOnly
-                if matches!(deferred.observer_loss, ObserverLoss::Stop) =>
-            {
-                Some(Arc::new(Notify::new()))
-            }
+            ObserverLoss::Stop => Some(Arc::new(Notify::new())),
             // A started stream-item receive continues without observers.
             // Its task needs no stop signal.
-            ReceiveExecution::Tokio | ReceiveExecution::StartOnly => None,
+            ObserverLoss::Continue => None,
         };
         // Register for Core::Drop's stop notification before scheduling the
         // task. Otherwise the last observer could drop before registration,
@@ -397,14 +485,30 @@ impl Core {
             Some(stop) => ObserverStop::WhenUnobserved(Arc::clone(stop).notified_owned()),
             None => ObserverStop::Never,
         };
+        let drive = self.take_unstarted(state, stop);
+        spawn_producer(settle(drive.future), drive.publisher, observer_stop);
+    }
+
+    /// Take an unstarted receive with its sole publisher, leaving the core
+    /// Running with `stop`. `state` is the guard of the check that found the
+    /// receive unstarted; this releases the lock before returning.
+    fn take_unstarted(
+        self: &Arc<Self>,
+        mut state: MutexGuard<'_, State>,
+        stop: Option<Arc<Notify>>,
+    ) -> Drive {
         // mem::replace installs Running in the core and returns the old state.
-        // Extract its Unstarted receive: deferred now owns that receive,
-        // rather than borrowing it as above. Other observers see Running
-        // and wait for the result instead of starting another receive.
+        // Extract its Unstarted receive: deferred now owns that receive.
+        // Other observers see Running and wait for the result instead of
+        // starting another receive.
         // No wake signal is needed unless an observer actually waits (HDL-25).
-        let State::Unstarted(deferred) =
-            mem::replace(&mut *state, State::Running { wake: None, stop })
-        else {
+        let State::Unstarted(deferred) = mem::replace(
+            &mut *state,
+            State::Running(Running {
+                wake: WakeSlot::default(),
+                stop,
+            }),
+        ) else {
             unreachable!("the state was Unstarted under this lock");
         };
         // Drop the mutex guard, not the core. This releases the state lock
@@ -415,20 +519,10 @@ impl Core {
         // is dropped before its first poll, the publisher still drops and marks
         // the core Lost. A weak reference does not keep observers alive (HDL-10).
         let publisher = Publisher::new(Arc::downgrade(self), deferred.traceback);
-        match execution {
-            // get() takes both the future and publisher, then polls the future
-            // on its own thread. Nothing is spawned here.
-            ReceiveExecution::CallingThread => Observation::Drive(Drive {
-                future: deferred.future,
-                publisher,
-                observer_loss: deferred.observer_loss,
-            }),
-            ReceiveExecution::Tokio | ReceiveExecution::StartOnly => {
-                // The task owns the future and publisher. This caller gets a
-                // Pending snapshot without waiting; completion can race its return.
-                spawn_producer(settle(deferred.future), publisher, observer_stop);
-                Observation::Observed(Observed::Pending)
-            }
+        Drive {
+            future: deferred.future,
+            publisher,
+            observer_loss: deferred.observer_loss,
         }
     }
 
@@ -453,7 +547,7 @@ impl Core {
                 // The inline get() already marked this core Running. Store the
                 // signal there; Core::Drop notifies it when the last observer goes.
                 match &mut *self.lock() {
-                    State::Running { stop: slot, .. } => *slot = Some(stop),
+                    State::Running(running) => running.stop = Some(stop),
                     _ => unreachable!("HDL-24: a driven producer keeps the core running"),
                 }
                 // The core holds the Notify; the task awaits this OwnedNotified.
@@ -478,16 +572,6 @@ impl Core {
             .map(|t| monarch_with_gil_blocking(GilSite::Traceback, |py| t.clone_ref(py)))
     }
 
-    /// Ensure an unstarted port or stream-reply receive is started on Tokio.
-    /// Rust waiters call this before waiting for the shared result. If the
-    /// operation is already running or finished, start nothing (HDL-24).
-    /// This neither waits for completion nor consumes the stored result.
-    pub(super) fn start(self: &Arc<Self>) {
-        // Start deferred receive work, but never claim raw bytes for a Rust
-        // observer before its returned future is polled.
-        drop(self.observe_or_drive(ReceiveExecution::StartOnly));
-    }
-
     /// Store a producer's raw reply, final value/error, or producer loss,
     /// then wake observers waiting for progress (HDL-1, HDL-25, HDL-27).
     ///
@@ -507,20 +591,18 @@ impl Core {
         // notification below. This block releases the mutex before returning.
         let previous_state = {
             let mut state_guard = self.lock();
-            // The incoming Raw state starts with wake: None. The stored
+            // The incoming Raw state starts with an empty WakeSlot. The stored
             // Running state may already have a Notify because an observer
             // registered to wait. Copy that notification into Raw before the
             // swap below, so it remains available for claim release and
             // completed unpickling as well as this reply's arrival.
-            if let State::Raw { wake: raw_wake, .. } = &mut next_state
-                && let State::Running {
-                    wake: running_wake, ..
-                } = &*state_guard
+            if let State::Raw(raw) = &mut next_state
+                && let State::Running(running) = &*state_guard
             {
                 // Some gives Raw another reference to the existing Notify.
                 // None leaves Raw without a wake signal. No new Notify is
                 // allocated in either case.
-                *raw_wake = running_wake.clone();
+                raw.wake = running.wake.clone();
             }
             // Store next_state in the core and return its previous state.
             // Retaining that state lets us notify its waiters after unlocking.
@@ -529,12 +611,12 @@ impl Core {
         // Extract the wake signal outside the lock. Publication requires a
         // running producer or the observer holding the sole raw claim.
         let wake = match &previous_state {
-            State::Running { wake, .. }
-            | State::Raw {
+            State::Running(Running { wake, .. })
+            | State::Raw(Raw {
                 claimed: true,
                 wake,
                 ..
-            } => wake,
+            }) => wake,
             _ => panic!("HDL-1: only a producer or reconstruction claim publishes"),
         };
         // Tests can pause here: the new state is visible, but waiters have
@@ -543,9 +625,7 @@ impl Core {
         run_test_hook(&BEFORE_NOTIFY);
         // The new state is already stored. Notify all registered waiters if a
         // wake signal was created; finishing alone never allocates one (HDL-25).
-        if let Some(wake) = wake {
-            wake.notify_waiters();
-        }
+        wake.notify();
     }
 
     /// Whether a raw reply has arrived (`Some(true)`), the operation has
@@ -553,9 +633,9 @@ impl Core {
     #[cfg(test)]
     pub(super) fn received_raw_for_test(&self) -> Option<bool> {
         match &*self.lock() {
-            State::Raw { .. } => Some(true),
+            State::Raw(_) => Some(true),
             State::Done(_) | State::Lost => Some(false),
-            State::Unstarted(_) | State::Running { .. } => None,
+            State::Unstarted(_) | State::Running(_) => None,
         }
     }
 }
@@ -574,9 +654,9 @@ impl Drop for Core {
             .expect("should not be poisoned: nothing panics under the state lock (HDL-9)");
         // A stop signal exists only for a spawned receive that must stop when
         // unobserved. Other states and ordinary producers need no notification.
-        if let State::Running {
+        if let State::Running(Running {
             stop: Some(stop), ..
-        } = operation_state
+        }) = operation_state
         {
             // Wake the task waiting for this signal. It stops the receive when
             // it next polls; this does not synchronously cancel the Tokio task.
@@ -596,7 +676,7 @@ impl Drop for Core {
 /// Check the result and register for completion under the same lock. Completion
 /// then either has already happened or will notify this waiter, even before its
 /// first poll of the notification future (HDL-25). Waiting takes no GIL.
-pub(super) async fn wait_observed(core: Arc<Core>) -> Observed {
+pub(super) async fn wait_observed(core: Arc<Core>) -> WaitOutcome {
     loop {
         // The temporary guard lasts through this match, then releases the lock
         // before awaiting. Checking and registering together prevents completion
@@ -604,25 +684,17 @@ pub(super) async fn wait_observed(core: Arc<Core>) -> Observed {
         let notified = match &mut *core.lock() {
             // Clone only the Arc, not the Python value or error. The caller
             // reads that value after unlocking, with the GIL if needed (HDL-9).
-            State::Done(outcome) => return Observed::Done(Arc::clone(outcome)),
-            State::Lost => return Observed::Lost,
-            State::Raw { reply, claimed, .. } if !*claimed => {
-                let reply = Arc::clone(reply);
-                // Claim inside this same check/register lock, not in a separate
-                // probe. Ready and running non-raw observers retain their cost.
-                *claimed = true;
-                return Observed::Reconstruct(ReconstructionClaim {
-                    core: Some(Arc::clone(&core)),
-                    reply,
-                });
-            }
+            State::Done(outcome) => return WaitOutcome::Done(Arc::clone(outcome)),
+            State::Lost => return WaitOutcome::Lost,
+            // Claim inside this same check/register lock, not in a separate
+            // probe. Ready and running non-raw observers retain their cost.
+            State::Raw(raw) => match raw.try_claim(&core) {
+                Some(claim) => return WaitOutcome::Reconstruct(claim),
+                None => Some(raw.wake.register()),
+            },
             // Reuse the shared wake signal, allocating it only for the first
             // waiter. Each waiter creates its own OwnedNotified under this lock.
-            State::Running { wake, .. } | State::Raw { wake, .. } => Some(
-                wake.get_or_insert_with(|| Arc::new(Notify::new()))
-                    .clone()
-                    .notified_owned(),
-            ),
+            State::Running(running) => Some(running.wake.register()),
             // Invalid here: the observation must start the receive before waiting.
             State::Unstarted(_) => None,
         };
@@ -654,18 +726,16 @@ pub(super) async fn wait_observed(core: Arc<Core>) -> Observed {
 pub(super) async fn wait_arrival(core: Arc<Core>) {
     loop {
         let state_change = match &mut *core.lock() {
-            State::Done(_) | State::Lost | State::Raw { claimed: false, .. } => return,
+            State::Done(_) | State::Lost | State::Raw(Raw { claimed: false, .. }) => return,
             // Nothing is ready for the loop reader: either the producer is
             // still running or another observer is reconstructing the reply.
             // Reuse the state's shared Notify, creating it lazily for the first
             // waiter. Create this waiter's owned notification future while the
             // state lock is held; after it fires, loop back and check the state
             // again.
-            State::Running { wake, .. } | State::Raw { wake, .. } => Some(
-                wake.get_or_insert_with(|| Arc::new(Notify::new()))
-                    .clone()
-                    .notified_owned(),
-            ),
+            State::Running(Running { wake, .. }) | State::Raw(Raw { wake, .. }) => {
+                Some(wake.register())
+            }
             State::Unstarted(_) => None,
         };
         #[cfg(test)]
@@ -684,15 +754,14 @@ pub(super) async fn wait_arrival(core: Arc<Core>) {
 /// this outcome onto the loop with `call_soon_threadsafe`.
 pub(super) async fn wait_terminal(core: Arc<Core>) -> PyResult<Arc<PyResult<Py<PyAny>>>> {
     match wait_observed(core).await {
-        Observed::Done(outcome) => Ok(outcome),
-        Observed::Lost => Err(handle_producer_ended_error()),
-        Observed::Reconstruct(claim) => {
+        WaitOutcome::Done(outcome) => Ok(outcome),
+        WaitOutcome::Lost => Err(handle_producer_ended_error()),
+        WaitOutcome::Reconstruct(claim) => {
             monarch_with_gil(GilSite::ReplyConvert, move |py| {
                 claim.reconstruct(py, ReconstructionFailurePolicy::StoreEveryFailureInHandle)
             })
             .await
         }
-        Observed::Pending => unreachable!("a waiting observation never returns Pending"),
     }
 }
 
@@ -768,11 +837,11 @@ impl Publisher {
     pub(super) fn publish_raw(mut self, reply: Arc<dyn Reconstruct>) {
         let core = self.core.take().expect("HDL-1: a Publisher publishes once");
         if let Some(core) = core.upgrade() {
-            core.finish(State::Raw {
+            core.finish(State::Raw(Raw {
                 reply,
                 claimed: false,
-                wake: None,
-            });
+                wake: WakeSlot::default(),
+            }));
         }
         // With no observers, drop the native payload without unpickling or a GIL.
     }

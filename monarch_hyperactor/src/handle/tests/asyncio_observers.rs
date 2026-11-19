@@ -111,7 +111,7 @@ fn int_result(fut: &Bound<'_, PyAny>) -> i64 {
 fn raw_unclaimed(py: Python<'_>, handle: &Py<PyHandle>) -> bool {
     matches!(
         &*handle.borrow(py).core.lock(),
-        State::Raw { claimed: false, .. }
+        State::Raw(raw) if !raw.claimed
     )
 }
 

@@ -132,7 +132,7 @@ fn raw_observer_interrupt_and_unwind_leave_a_retry() {
             assert!(attempt.expect("not an unwind").is_err());
         }
         assert!(
-            matches!(&*handle.core.lock(), State::Raw { claimed: false, .. }),
+            matches!(&*handle.core.lock(), State::Raw(raw) if !raw.claimed),
             "the claim is released and the reply retained"
         );
         monarch_with_gil_blocking(GilSite::Test, |py| {
@@ -208,7 +208,7 @@ fn raw_arrival_release_and_settlement_wake_registered_waiters() {
             }
             let expected = if arrival_only && transition != "settle" {
                 assert!(
-                    matches!(&*handle.core.lock(), State::Raw { claimed: false, .. }),
+                    matches!(&*handle.core.lock(), State::Raw(raw) if !raw.claimed),
                     "{transition}: the arrival waiter leaves the bytes unclaimed"
                 );
                 0
