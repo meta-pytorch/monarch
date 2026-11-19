@@ -18,9 +18,9 @@ A keeper owns the job's lifetime, allocation references, and root supervision po
 
 In these examples an independent Python process connects through a private token and offers its `this_proc()` mesh. The keeper invokes `spawn` on that offered mesh from inside its own endpoint. The resulting application Controller actor therefore belongs to the keeper even though it runs in the offered process. The controller can spawn workers on a borrowed keeper-host reference: the host remains alive while the controller's worker subtree is cleaned up.
 
-[Token connection](../../python/monarch/_src/actor/token.py) only exchanges references to existing actors. It does not adopt the connecting root actor. Likewise, an operating system parent-child relationship is not Monarch supervision. Process service actors and the bootstrap's root can have distinct lifetimes from the application Controller actor. The ownership established by the keeper's spawn is what makes application failure reporting meaningful.
+[Token connection](../../python/monarch/_src/actor/token.py) only exchanges references to existing actors. It does not adopt the connecting root actor. Likewise, an operating system parent-child relationship is not Monarch supervision. Process service actors and the bootstrap's root can have distinct lifetimes from the application Controller actor. The ownership established by the keeper's spawn is what makes application failure reporting meaningful. This establishes one application supervision root, not adoption of every runtime or bootstrap actor; requiring every runtime supervision event to converge on the keeper would require genuine root adoption or controller processes provisioned under the keeper.
 
-This pattern uses ordinary actors, ownership, and a failure handler. It does not require controller-specific recovery machinery in the framework. The application chooses whether workers belong beneath the controller or beside it, and the keeper implements the corresponding restart policy.
+These scoped application examples use ordinary actors, ownership, and a failure handler, without controller-specific recovery machinery in the framework. The application chooses whether workers belong beneath the controller or beside it, and the keeper implements the corresponding restart policy.
 
 ## Recommended scenario: restart the whole training domain
 
