@@ -622,7 +622,7 @@ def test_ignored_call_error_is_logged_after_its_observer_is_dropped(
             while time.monotonic() < deadline:
                 output += log.read()
                 if any(
-                    "src/handle.rs:" in event
+                    "src/handle/outcome.rs:" in event
                     and "background task errored" in event
                     and message in event
                     for event in event_header.split(output)
