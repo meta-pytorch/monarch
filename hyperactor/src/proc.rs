@@ -739,7 +739,7 @@ pub struct ActorInstance<A: Actor> {
     /// Handle to the actor (used for lifecycle control and port access).
     pub handle: ActorHandle<A>,
     /// Supervision events delivered to this actor.
-    pub supervision: mpsc::UnboundedReceiver<ActorSupervisionEvent>,
+    pub supervision: mpsc::UnboundedReceiver<Box<ActorSupervisionEvent>>,
     /// Control signals for the actor.
     pub signal: mpsc::UnboundedReceiver<Signal>,
     /// Primary work queue for handler dispatch.
@@ -2671,7 +2671,7 @@ pub struct InstanceReceivers<A: Actor> {
     /// for detached/client instances that don't run an actor loop.
     actor_loop: Option<(
         mpsc::UnboundedReceiver<Signal>,
-        mpsc::UnboundedReceiver<ActorSupervisionEvent>,
+        mpsc::UnboundedReceiver<Box<ActorSupervisionEvent>>,
     )>,
     /// Work queue for dispatching messages to actor handlers.
     work: ActorWorkReceiver<A>,
@@ -2733,7 +2733,7 @@ impl<A: Actor> Instance<A> {
         } else {
             let (signal_tx, signal_receiver) = mpsc::unbounded_channel::<Signal>();
             let (supervision_tx, supervision_receiver) =
-                mpsc::unbounded_channel::<ActorSupervisionEvent>();
+                mpsc::unbounded_channel::<Box<ActorSupervisionEvent>>();
             Some((
                 (signal_tx, supervision_tx),
                 (signal_receiver, supervision_receiver),
@@ -3421,7 +3421,7 @@ impl<A: Actor> Instance<A> {
         mut actor: A,
         actor_loop_receivers: (
             mpsc::UnboundedReceiver<Signal>,
-            mpsc::UnboundedReceiver<ActorSupervisionEvent>,
+            mpsc::UnboundedReceiver<Box<ActorSupervisionEvent>>,
         ),
         mut work_rx: ActorWorkReceiver<A>,
     ) {
@@ -3575,7 +3575,7 @@ impl<A: Actor> Instance<A> {
         actor: &mut A,
         mut actor_loop_receivers: (
             mpsc::UnboundedReceiver<Signal>,
-            mpsc::UnboundedReceiver<ActorSupervisionEvent>,
+            mpsc::UnboundedReceiver<Box<ActorSupervisionEvent>>,
         ),
         work_rx: &mut ActorWorkReceiver<A>,
     ) -> Result<String, ActorError> {
@@ -3678,7 +3678,7 @@ impl<A: Actor> Instance<A> {
         actor: &mut A,
         actor_loop_receivers: &mut (
             mpsc::UnboundedReceiver<Signal>,
-            mpsc::UnboundedReceiver<ActorSupervisionEvent>,
+            mpsc::UnboundedReceiver<Box<ActorSupervisionEvent>>,
         ),
         work_rx: &mut ActorWorkReceiver<A>,
     ) -> Result<ActorStopped, ActorError> {
@@ -3742,7 +3742,7 @@ impl<A: Actor> Instance<A> {
                     let work = work.expect("inconsistent work queue state");
                     if let Err(err) = work.handle(actor, self).await {
                         while let Ok(supervision_event) = supervision_event_receiver.try_recv() {
-                            self.handle_supervision_event(actor, supervision_event).await?;
+                            self.handle_supervision_event(actor, *supervision_event).await?;
                         }
                         let kind = ActorErrorKind::processing(err);
                         return Err(ActorError {
@@ -3767,7 +3767,7 @@ impl<A: Actor> Instance<A> {
                     }
                 }
                 Some(supervision_event) = supervision_event_receiver.recv() => {
-                    self.handle_supervision_event(actor, supervision_event).await?;
+                    self.handle_supervision_event(actor, *supervision_event).await?;
                 }
             }
             self.inner
@@ -4336,7 +4336,7 @@ struct InstanceCellState {
     /// Control plane message senders to the actor loop, if one is running.
     actor_loop: Option<(
         mpsc::UnboundedSender<Signal>,
-        mpsc::UnboundedSender<ActorSupervisionEvent>,
+        mpsc::UnboundedSender<Box<ActorSupervisionEvent>>,
     )>,
 
     /// A watch for communicating the actor's state.
@@ -4575,7 +4575,7 @@ impl InstanceCell {
         mailbox: Mailbox,
         actor_loop: Option<(
             mpsc::UnboundedSender<Signal>,
-            mpsc::UnboundedSender<ActorSupervisionEvent>,
+            mpsc::UnboundedSender<Box<ActorSupervisionEvent>>,
         )>,
         status_tx: watch::Sender<ActorStatus>,
         status: watch::Receiver<ActorStatus>,
@@ -4907,7 +4907,7 @@ impl InstanceCell {
     pub fn send_supervision_event_or_crash(&self, event: ActorSupervisionEvent) {
         match &self.inner.actor_loop {
             Some((_, supervision_tx)) => {
-                if let Err(err) = supervision_tx.send(event.clone()) {
+                if let Err(err) = supervision_tx.send(Box::new(event.clone())) {
                     if !event.is_error() {
                         // Normal lifecycle events (e.g. clean stop) that fail to
                         // send are silently dropped. This happens when a child

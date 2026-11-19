@@ -196,7 +196,7 @@ pub struct GlobalClientActor {
     /// The root client is a monitor, so it should process these
     /// events without crashing on routine routing/delivery failures
     /// it observes.
-    supervision_rx: mpsc::UnboundedReceiver<ActorSupervisionEvent>,
+    supervision_rx: mpsc::UnboundedReceiver<Box<ActorSupervisionEvent>>,
     /// Primary work queue for handler dispatch.
     ///
     /// Any bound handler message (e.g. `MeshFailure`,
@@ -215,7 +215,7 @@ impl GlobalClientActor {
                         let work = work.expect("inconsistent work queue state");
                         if let Err(err) = work.handle(&mut self, instance).await {
                             while let Ok(supervision_event) = self.supervision_rx.try_recv() {
-                                instance.handle_supervision_event(&mut self, supervision_event).await
+                                instance.handle_supervision_event(&mut self, *supervision_event).await
                                     .expect("GlobalClientActor::handle_supervision_event is infallible");
                             }
                             let kind = ActorErrorKind::processing(err);
@@ -229,7 +229,7 @@ impl GlobalClientActor {
                         // TODO: do we need any signal handling for the root client?
                     }
                     Some(supervision_event) = self.supervision_rx.recv() => {
-                        instance.handle_supervision_event(&mut self, supervision_event).await
+                        instance.handle_supervision_event(&mut self, *supervision_event).await
                             .expect("GlobalClientActor::handle_supervision_event is infallible");
                     }
                 };

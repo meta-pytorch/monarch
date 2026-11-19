@@ -188,7 +188,7 @@ fn process_name(pid: u32) -> Option<String> {
 #[derive(Debug)]
 pub struct TestRootClient {
     signal_rx: mpsc::UnboundedReceiver<Signal>,
-    supervision_rx: mpsc::UnboundedReceiver<ActorSupervisionEvent>,
+    supervision_rx: mpsc::UnboundedReceiver<Box<ActorSupervisionEvent>>,
     work_rx: ActorWorkReceiver<Self>,
 }
 
@@ -226,7 +226,7 @@ impl TestRootClient {
                         let work = work.expect("inconsistent work queue state");
                         if let Err(err) = work.handle(&mut self, instance).await {
                             while let Ok(supervision_event) = self.supervision_rx.try_recv() {
-                                if let Err(err) = instance.handle_supervision_event(&mut self, supervision_event).await {
+                                if let Err(err) = instance.handle_supervision_event(&mut self, *supervision_event).await {
                                     break 'messages err;
                                 }
                             }
@@ -241,7 +241,7 @@ impl TestRootClient {
                         // TODO: do we need any signal handling for the root client?
                     }
                     Some(supervision_event) = self.supervision_rx.recv() => {
-                        if let Err(err) = instance.handle_supervision_event(&mut self, supervision_event).await {
+                        if let Err(err) = instance.handle_supervision_event(&mut self, *supervision_event).await {
                             break err;
                         }
                     }

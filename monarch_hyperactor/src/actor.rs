@@ -1390,7 +1390,7 @@ impl PythonActor {
                         }
                     }
                     Some(supervision_event) = supervision_rx.recv() => {
-                        if let Err(err) = instance.handle_supervision_event(&mut actor, supervision_event).await {
+                        if let Err(err) = instance.handle_supervision_event(&mut actor, *supervision_event).await {
                             break Some(err);
                         }
                     }
