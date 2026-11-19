@@ -2405,8 +2405,8 @@ mod tests {
 
         let child_name = ActorMeshId::instance(Label::new("orphan_child").unwrap());
 
-        // Supervision port required by WrapperActor params.
-        let (supervision_port, _supervision_receiver) = instance.open_port::<MeshFailure>();
+        let (supervision_port, _supervision_receiver) =
+            instance.open_port::<ActorSupervisionEvent>();
         let supervisor = supervision_port.bind();
 
         let _wrapper_mesh: ActorMesh<testactor::WrapperActor> = controller_proc_mesh
