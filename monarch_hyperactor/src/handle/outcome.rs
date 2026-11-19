@@ -21,6 +21,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyString;
 
 use super::core::Observed;
+use super::core::WaitOutcome;
 use crate::runtime::GilSite;
 use crate::runtime::monarch_with_gil_blocking;
 
@@ -222,13 +223,12 @@ pub(super) fn read_observed(py: Python<'_>, observed: Observed) -> PyResult<Opti
 /// reading can share this acquisition; an interrupted observer leaves Raw intact.
 pub(super) fn reconstruct_observed(
     py: Python<'_>,
-    observed: Observed,
+    observed: WaitOutcome,
     failure_policy: ReconstructionFailurePolicy,
 ) -> PyResult<Arc<PyResult<Py<PyAny>>>> {
     match observed {
-        Observed::Done(outcome) => Ok(outcome),
-        Observed::Lost => Err(handle_producer_ended_error()),
-        Observed::Reconstruct(claim) => claim.reconstruct(py, failure_policy),
-        Observed::Pending => unreachable!("wait for a pending observation before reading"),
+        WaitOutcome::Done(outcome) => Ok(outcome),
+        WaitOutcome::Lost => Err(handle_producer_ended_error()),
+        WaitOutcome::Reconstruct(claim) => claim.reconstruct(py, failure_policy),
     }
 }

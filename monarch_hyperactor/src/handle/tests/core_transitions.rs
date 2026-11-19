@@ -307,7 +307,10 @@ fn wake_exists_only_while_an_observer_waits() {
                     .unwrap()
                     .upgrade()
                     .unwrap();
-                let has_wake = matches!(*core.lock(), State::Running { wake: Some(_), .. });
+                let has_wake = matches!(
+                    &*core.lock(),
+                    State::Running(running) if running.wake.waiters_for_test().is_some()
+                );
                 saw_wake.store(has_wake, Ordering::SeqCst);
                 drop(core);
                 ReceiveOutcome::Outcome(
@@ -340,9 +343,7 @@ fn wake_exists_only_while_an_observer_waits() {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         let registered = match &*handle.core.lock() {
-            State::Running {
-                wake: Some(wake), ..
-            } => Arc::strong_count(wake) - 1,
+            State::Running(running) => running.wake.waiters_for_test().unwrap_or(0),
             _ => 0,
         };
         if registered == 2 {

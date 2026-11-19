@@ -281,10 +281,10 @@ use self::asyncio::schedule_completion;
 use self::asyncio::spawn_arrival_wake;
 use self::core::Core;
 use self::core::Observation;
-use self::core::Observed;
 pub(crate) use self::core::Publisher;
-use self::core::ReceiveExecution;
+use self::core::Running;
 use self::core::State;
+use self::core::WaitOutcome;
 use self::core::wait_observed;
 use self::core::wait_terminal;
 pub(crate) use self::outcome::Reconstruct;
@@ -354,13 +354,7 @@ impl PyHandle {
 
     /// Create the sole Publisher and the pending Handle it will complete.
     pub(crate) fn pending() -> (Publisher, Self) {
-        let core = Core::new(
-            State::Running {
-                wake: None,
-                stop: None,
-            },
-            None,
-        );
+        let core = Core::new(State::Running(Running::default()), None);
         (Publisher::new(Arc::downgrade(&core), None), Self { core })
     }
 
@@ -436,7 +430,7 @@ impl PyHandle {
             // Wait for a stored outcome or claim an available raw reply.
             // Producer loss fails here without acquiring the GIL.
             let observed = wait_observed(core).await;
-            if matches!(observed, Observed::Lost) {
+            if matches!(observed, WaitOutcome::Lost) {
                 return Err(handle_producer_ended_error());
             }
             // Reconstruct a claimed reply and read its shared outcome in one
@@ -499,13 +493,7 @@ impl PyHandle {
     {
         // A producer will supply the result. Allocate no waiter notification yet,
         // and install no observer-loss stop signal for this ordinary producer.
-        let core = Core::new(
-            State::Running {
-                wake: None,
-                stop: None,
-            },
-            None,
-        );
+        let core = Core::new(State::Running(Running::default()), None);
         // The task publishes through a weak reference; it does not keep the core
         // alive as an observer. This producer carries no creation traceback.
         spawn_producer(
@@ -527,13 +515,7 @@ impl PyHandle {
         F: Future<Output = PyResult<R>> + Send + 'static,
         R: Reconstruct + 'static,
     {
-        let core = Core::new(
-            State::Running {
-                wake: None,
-                stop: None,
-            },
-            traceback,
-        );
+        let core = Core::new(State::Running(Running::default()), traceback);
         let publisher = Publisher::new(Arc::downgrade(&core), core.producer_traceback());
         get_tokio_runtime().spawn(async move {
             match future.await {
@@ -579,12 +561,12 @@ impl PyHandle {
         async move {
             // Wait for the shared outcome. Producer loss returns an error here.
             let observed = wait_observed(core).await;
-            if matches!(observed, Observed::Lost) {
+            if matches!(observed, WaitOutcome::Lost) {
                 return Err(handle_producer_ended_error());
             }
             // Check only whether the Rust Result is Ok. The Python value is
             // neither borrowed nor cloned, so success needs no GIL acquisition.
-            if let Observed::Done(outcome) = &observed
+            if let WaitOutcome::Done(outcome) = &observed
                 && outcome.is_ok()
             {
                 return Ok(());
@@ -745,8 +727,8 @@ impl PyHandle {
 
         // Under Core.state's mutex, either claim an unstarted port/stream receive
         // exactly once, or obtain a snapshot of work already started or finished.
-        // CallingThread means this get() will poll a claimed receive itself.
-        let observed = match core.observe_or_drive(ReceiveExecution::CallingThread) {
+        // This get() will poll a claimed receive itself.
+        let observed = match core.observe_or_drive() {
             // No receive was transferred: use the existing operation's snapshot.
             Observation::Observed(observed) => observed,
             // Drive owns the claimed receive future and its sole Publisher.
@@ -754,8 +736,8 @@ impl PyHandle {
             // get()'s value or error. A timeout or interrupt hands work to Tokio.
             Observation::Drive(drive) => return drive_inline(py, &core, drive, duration),
         };
-        let observed = match observed {
-            Observed::Pending => {
+        let observed = match observed.into_wait_outcome() {
+            None => {
                 // Work is already running elsewhere. This future only waits for
                 // its shared result; it neither starts nor polls the producer.
                 // Moving core into it keeps this get() counted as an observer.
@@ -777,7 +759,7 @@ impl PyHandle {
                     None => signal_safe_block_on_inline(py, wait)?,
                 }
             }
-            ready => ready,
+            Some(ready) => ready,
         };
         // Core.state's mutex is no longer held. This thread has the GIL; the
         // blocking helper reacquired it if we waited. Clone the stored value or
@@ -850,8 +832,8 @@ impl PyHandle {
         // A running loop was confirmed above. observe() may now start an
         // unstarted port/stream receive on Tokio (HDL-24). It releases
         // Core.state's mutex before we read or publish any Python result here.
-        match slf.core.observe() {
-            observed @ (Observed::Done(_) | Observed::Reconstruct(_)) => {
+        match slf.core.observe().into_wait_outcome() {
+            Some(observed @ (WaitOutcome::Done(_) | WaitOutcome::Reconstruct(_))) => {
                 // An available raw reply is reconstructed on this loop thread.
                 // Another observer's claim instead returns Pending below, so
                 // the loop never waits for that observer while holding the GIL.
@@ -873,7 +855,7 @@ impl PyHandle {
                 // task or loop wake-channel registration is needed (HDL-22).
                 return Ok(fut);
             }
-            Observed::Lost => {
+            Some(WaitOutcome::Lost) => {
                 // The producer ended without publishing. Complete the asyncio
                 // future with that RuntimeError; awaiting it raises the error,
                 // rather than waiting for a result that will never arrive.
@@ -884,7 +866,7 @@ impl PyHandle {
             // Not ready: continue below to register a loop wakeup and start a
             // native waiter for the result. Any deferred receive was started by
             // observe(), not by this waiter.
-            Observed::Pending => {}
+            None => {}
         }
         // Reuse or install this loop's shared pipe-based wake channel. None means
         // the loop lacks add_reader support or cannot be weakly referenced; other
