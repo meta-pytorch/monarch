@@ -835,8 +835,9 @@ def test_as_asyncio_on_completed_stop_iteration_wraps_in_runtime_error():
 #   fm.ready_get_on_tokio_refuses, fm.invalid_timeout_on_ready,
 #   fm.ready_as_asyncio_settlement, fm.terminal_baseexception_reobservable
 #
-# The permanent Handle-side oracle for fm.tokio_await lives in handle.rs, so
-# that contract is checked directly through the Rust binding.
+# The permanent Handle-side oracle for fm.tokio_await lives in
+# handle/tests/asyncio_observers.rs, so that contract is checked directly
+# through the Rust binding.
 # ---------------------------------------------------------------------------
 
 
@@ -1404,8 +1405,8 @@ def test_fm_tokio_await_raises_native_not_would_block(make_observable):
     __await__() raises the native no-running-asyncio-loop RuntimeError, and the
     observable survives the refusal.
 
-    The permanent Handle-side oracle lives in handle.rs; this case is the
-    reusable facade coverage."""
+    The permanent Handle-side oracle lives in handle/tests/asyncio_observers.rs;
+    this case is the reusable facade coverage."""
     _assert_tokio_await_raises_native(make_observable)
 
 
