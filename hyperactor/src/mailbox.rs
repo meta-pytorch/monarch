@@ -1849,7 +1849,7 @@ impl Mailbox {
     /// for processing the delivered messages.
     pub fn open_port<M: Message>(&self) -> (PortHandle<M>, PortReceiver<M>) {
         let port_index = self.inner.allocate_port();
-        let (sender, receiver) = sequenced_unbounded::<SequencedEnvelope<M>>();
+        let (sender, receiver) = sequenced_unbounded::<Box<SequencedEnvelope<M>>>();
         let port_id = self.inner.actor_id.port_addr(Port::from(port_index));
         self.register_ordering_snapshot(&port_id, &receiver);
         tracing::trace!(
@@ -1879,7 +1879,7 @@ impl Mailbox {
     /// port from the mailbox, so callers that need the handler to stay live
     /// must retain the receiver.
     pub(crate) fn bind_handler_port<M: RemoteMessage>(&self) -> (PortHandle<M>, PortReceiver<M>) {
-        let (sender, receiver) = sequenced_unbounded::<SequencedEnvelope<M>>();
+        let (sender, receiver) = sequenced_unbounded::<Box<SequencedEnvelope<M>>>();
         let port_id = self.inner.actor_id.port_addr(Port::handler::<M>());
         self.register_ordering_snapshot(&port_id, &receiver);
         let handle = PortHandle::new_full_with_target(
@@ -1899,7 +1899,7 @@ impl Mailbox {
     fn register_ordering_snapshot<M: Message>(
         &self,
         port: &PortAddr,
-        receiver: &SequencedReceiver<SequencedEnvelope<M>>,
+        receiver: &SequencedReceiver<Box<SequencedEnvelope<M>>>,
     ) {
         let snapshot = receiver.snapshot_handle();
         self.inner
@@ -1959,14 +1959,18 @@ impl Mailbox {
         A::State: Message + Default + Clone,
     {
         let port_index = self.inner.allocate_port();
-        let (sender, receiver) = sequenced_unbounded::<SequencedEnvelope<A::State>>();
+        let (sender, receiver) = sequenced_unbounded::<Box<SequencedEnvelope<A::State>>>();
         let port_id = self.inner.actor_id.port_addr(Port::from(port_index));
         let state = Mutex::new(A::State::default());
         let reducer_spec = accum.reducer_spec();
         let enqueue = move |_, update: A::Update| {
             let mut state = state.lock().unwrap();
             accum.accumulate(&mut state, update)?;
-            let _ = sender.send(SequencedEnvelope::new(SeqInfo::Direct, None, state.clone()));
+            let _ = sender.send(Box::new(SequencedEnvelope::new(
+                SeqInfo::Direct,
+                None,
+                state.clone(),
+            )));
             Ok(())
         };
         (
@@ -2926,7 +2930,7 @@ impl<M: Message> fmt::Display for OncePortHandle<M> {
 /// on open ports.
 #[derive(Debug)]
 pub struct PortReceiver<M> {
-    receiver: SequencedReceiver<SequencedEnvelope<M>>,
+    receiver: SequencedReceiver<Box<SequencedEnvelope<M>>>,
     port_id: PortAddr,
     /// When multiple messages are put in channel, only receive the latest one
     /// if coalesce is true. Other messages will be discarded.
@@ -2938,7 +2942,7 @@ pub struct PortReceiver<M> {
 
 impl<M> PortReceiver<M> {
     fn new(
-        receiver: SequencedReceiver<SequencedEnvelope<M>>,
+        receiver: SequencedReceiver<Box<SequencedEnvelope<M>>>,
         port_id: PortAddr,
         coalesce: bool,
         mailbox: Mailbox,
@@ -3152,8 +3156,10 @@ fn classify_sender_error(err: anyhow::Error) -> MailboxSenderErrorKind {
 
 /// A sender to an M-typed unbounded port.
 enum UnboundedPortSender<M: Message> {
-    /// Send through a receiver-local sequencing domain.
-    Sequenced(mpsc::UnboundedSender<SequencedEnvelope<M>>),
+    /// Send through a receiver-local sequencing domain. Envelopes are boxed
+    /// so an idle port's channel holds pointer-sized slots: an envelope is at
+    /// least 144 bytes, and the channel allocates 32 slots up front.
+    Sequenced(mpsc::UnboundedSender<Box<SequencedEnvelope<M>>>),
     /// Use the provided function to enqueue the item.
     Func(Arc<dyn Fn(Flattrs, M) -> Result<(), anyhow::Error> + Send + Sync>),
     /// A runtime-dispatched handler port that observes mailbox drain state.
@@ -3170,7 +3176,11 @@ impl<M: Message> UnboundedPortSender<M> {
                 }
                 let sender_addr = headers.get(crate::mailbox::headers::SENDER_ACTOR_ID);
                 sender
-                    .send(SequencedEnvelope::new(seq_info, sender_addr, message))
+                    .send(Box::new(SequencedEnvelope::new(
+                        seq_info,
+                        sender_addr,
+                        message,
+                    )))
                     .map_err(anyhow::Error::from)
             }
             Self::Func(func) => func(headers, message),
@@ -4912,7 +4922,7 @@ mod tests {
         let port = crate::PortRef::attest(port_id.clone());
         let (return_handle, mut return_receiver) =
             crate::mailbox::undeliverable::new_undeliverable_port();
-        let (sender, receiver) = sequenced_unbounded::<SequencedEnvelope<u64>>();
+        let (sender, receiver) = sequenced_unbounded::<Box<SequencedEnvelope<u64>>>();
 
         drop(receiver);
 
@@ -6251,13 +6261,16 @@ mod tests {
     async fn verify_receiver(coalesce: bool, drop_sender: bool) {
         fn create_receiver<M>(
             coalesce: bool,
-        ) -> (mpsc::UnboundedSender<SequencedEnvelope<M>>, PortReceiver<M>) {
+        ) -> (
+            mpsc::UnboundedSender<Box<SequencedEnvelope<M>>>,
+            PortReceiver<M>,
+        ) {
             // Create dummy state and port_id to create PortReceiver. They are
             // not used in the test.
             let dummy_actor_ref: ActorAddr = test_actor_id("world_0", "actor");
             let dummy_state = State::new(dummy_actor_ref.clone());
             let dummy_port_id = dummy_actor_ref.port_addr(Port::from(0));
-            let (sender, receiver) = sequenced_unbounded::<SequencedEnvelope<M>>();
+            let (sender, receiver) = sequenced_unbounded::<Box<SequencedEnvelope<M>>>();
             let receiver = PortReceiver::new(
                 receiver,
                 dummy_port_id,
@@ -6269,9 +6282,13 @@ mod tests {
             (sender, receiver)
         }
 
-        fn send_direct<M>(sender: &mpsc::UnboundedSender<SequencedEnvelope<M>>, message: M) {
+        fn send_direct<M>(sender: &mpsc::UnboundedSender<Box<SequencedEnvelope<M>>>, message: M) {
             sender
-                .send(SequencedEnvelope::new(SeqInfo::Direct, None, message))
+                .send(Box::new(SequencedEnvelope::new(
+                    SeqInfo::Direct,
+                    None,
+                    message,
+                )))
                 .unwrap();
         }
 

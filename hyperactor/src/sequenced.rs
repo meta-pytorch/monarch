@@ -82,6 +82,25 @@ impl<M> Sequenced for SequencedEnvelope<M> {
     }
 }
 
+/// Lets a channel carry boxed items. A tokio unbounded channel allocates a
+/// block of slots when it is created, so boxing large items keeps an idle
+/// channel small.
+impl<T: Sequenced> Sequenced for Box<T> {
+    type Message = T::Message;
+
+    fn seq_info(&self) -> SeqInfo {
+        (**self).seq_info()
+    }
+
+    fn sender(&self) -> Option<ActorAddr> {
+        (**self).sender()
+    }
+
+    fn into_message(self) -> Self::Message {
+        (*self).into_message()
+    }
+}
+
 /// A message that bypasses sequencing.
 #[derive(Debug)]
 pub(crate) struct DirectEnvelope<M> {
