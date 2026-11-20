@@ -28,7 +28,6 @@ use datafusion::datasource::MemTable;
 use datafusion::datasource::TableProvider;
 use datafusion::error::Result as DFResult;
 use datafusion::execution::SendableRecordBatchStream;
-use datafusion::prelude::SQLOptions;
 use datafusion::prelude::SessionContext;
 use hyperactor as reference;
 use hyperactor::Endpoint as _;
@@ -69,6 +68,7 @@ use crate::pyspy_table::PySpyDumpBuffer;
 use crate::pyspy_table::PySpyFrameBuffer;
 use crate::pyspy_table::PySpyLocalVariableBuffer;
 use crate::pyspy_table::PySpyStackTraceBuffer;
+use crate::read_only_sql_options;
 use crate::serialize_batch;
 use crate::serialize_schema;
 use crate::timestamp_to_micros;
@@ -1124,12 +1124,8 @@ impl DatabaseScanner {
                         ctx.register_table(name, table)?;
                     }
                 }
-                let options = SQLOptions::new()
-                    .with_allow_ddl(false)
-                    .with_allow_dml(false)
-                    .with_allow_statements(false);
                 let stream = ctx
-                    .sql_with_options(sql, options)
+                    .sql_with_options(sql, read_only_sql_options())
                     .await?
                     .execute_stream()
                     .await?;
