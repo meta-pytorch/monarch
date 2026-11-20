@@ -1317,6 +1317,8 @@ fn driver_name(pid: Pid) -> String {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::net::Ipv4Addr;
+    use std::net::Ipv6Addr;
     use std::net::UdpSocket;
     use std::num::NonZeroU32;
     use std::path::Path;
@@ -1420,7 +1422,17 @@ mod tests {
             NonZeroUsize::new(1024 * 1024).unwrap(),
             true,
         );
-        UdpDriver::new(UdpSocket::bind("[::1]:0").unwrap(), config).unwrap()
+        UdpDriver::new(loopback_socket(), config).unwrap()
+    }
+
+    // GitHub's Linux CI containers have no IPv6 loopback.
+    fn loopback_socket() -> UdpSocket {
+        UdpSocket::bind((Ipv6Addr::LOCALHOST, 0))
+            .or_else(|error| match error.kind() {
+                io::ErrorKind::AddrNotAvailable => UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)),
+                _ => Err(error),
+            })
+            .expect("bind loopback UDP socket")
     }
 
     fn limits() -> SubmissionLimits {
@@ -1482,8 +1494,6 @@ mod tests {
     }
 
     #[tokio::test]
-    // TODO: OSS: GitHub's Linux CI containers have no IPv6 loopback: Os { code: 99, kind: AddrNotAvailable, message: "Cannot assign requested address" }
-    #[cfg_attr(not(fbcode_build), ignore)]
     async fn establishes_streams_and_preserves_separate_shutdown_and_join() {
         let directory = TempDir::new().unwrap();
         let issuer = certificate_authority();

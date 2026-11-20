@@ -1119,6 +1119,7 @@ fn synthetic_addr(id: u128) -> SocketAddr {
 
 #[cfg(test)]
 mod tests {
+    use std::net::Ipv4Addr;
     use std::net::Ipv6Addr;
     use std::num::NonZeroUsize;
 
@@ -1141,8 +1142,16 @@ mod tests {
             .with_max_transmit_batch_segments(NonZeroUsize::new(4).expect("nonzero GSO count"))
     }
 
+    // GitHub's Linux CI containers have no IPv6 loopback.
     fn socket() -> std::net::UdpSocket {
-        std::net::UdpSocket::bind((Ipv6Addr::LOCALHOST, 0)).expect("bind loopback UDP socket")
+        std::net::UdpSocket::bind((Ipv6Addr::LOCALHOST, 0))
+            .or_else(|error| match error.kind() {
+                io::ErrorKind::AddrNotAvailable => {
+                    std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
+                }
+                _ => Err(error),
+            })
+            .expect("bind loopback UDP socket")
     }
 
     fn payload(target: Pid) -> Vec<u8> {
@@ -1161,8 +1170,6 @@ mod tests {
     }
 
     #[test]
-    // TODO: OSS: GitHub's Linux CI containers have no IPv6 loopback: Os { code: 99, kind: AddrNotAvailable, message: "Cannot assign requested address" }
-    #[cfg_attr(not(fbcode_build), ignore)]
     fn routed_udp_splits_transit_aggregates_larger_than_a_send_slot() {
         let destination_socket = socket();
         let destination_address = destination_socket
@@ -1189,8 +1196,6 @@ mod tests {
     }
 
     #[test]
-    // TODO: OSS: GitHub's Linux CI containers have no IPv6 loopback: Os { code: 99, kind: AddrNotAvailable, message: "Cannot assign requested address" }
-    #[cfg_attr(not(fbcode_build), ignore)]
     fn routed_udp_preserves_completion_owned_gso_and_gro() {
         let config = config();
         let receiver_socket = socket();
@@ -1254,8 +1259,6 @@ mod tests {
     }
 
     #[test]
-    // TODO: OSS: GitHub's Linux CI containers have no IPv6 loopback: Os { code: 99, kind: AddrNotAvailable, message: "Cannot assign requested address" }
-    #[cfg_attr(not(fbcode_build), ignore)]
     fn routed_udp_forwards_nonlocal_cids_inside_the_completion_owner() {
         let config = config();
         let destination_socket = socket();

@@ -600,6 +600,8 @@ pub enum NodeError {
 mod tests {
     use std::future::poll_fn;
     use std::io::ErrorKind;
+    use std::net::Ipv4Addr;
+    use std::net::Ipv6Addr;
     use std::num::NonZeroUsize;
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering;
@@ -1013,25 +1015,22 @@ mod tests {
         );
     }
 
+    // GitHub's Linux CI containers have no IPv6 loopback.
+    fn loopback_socket() -> std::net::UdpSocket {
+        std::net::UdpSocket::bind((Ipv6Addr::LOCALHOST, 0))
+            .or_else(|error| match error.kind() {
+                ErrorKind::AddrNotAvailable => std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)),
+                _ => Err(error),
+            })
+            .expect("bind loopback UDP socket")
+    }
+
     #[tokio::test]
-    // TODO: OSS: GitHub's Linux CI containers have no IPv6 loopback: Os { code: 99, kind: AddrNotAvailable, message: "Cannot assign requested address" }
-    #[cfg_attr(not(fbcode_build), ignore)]
     async fn direct_udp_nodes_publish_and_exchange_streams() {
-        let parent_socket = std::net::UdpSocket::bind("[::]:0").expect("bind parent UDP socket");
-        let parent_port = parent_socket
-            .local_addr()
-            .expect("read parent UDP address")
-            .port();
-        let parent_address =
-            std::net::SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, parent_port));
-        let child_socket = std::net::UdpSocket::bind("[::]:0").expect("bind child UDP socket");
-        let child_address = std::net::SocketAddr::from((
-            std::net::Ipv6Addr::LOCALHOST,
-            child_socket
-                .local_addr()
-                .expect("read child UDP address")
-                .port(),
-        ));
+        let parent_socket = loopback_socket();
+        let parent_address = parent_socket.local_addr().expect("read parent UDP address");
+        let child_socket = loopback_socket();
+        let child_address = child_socket.local_addr().expect("read child UDP address");
         let mut identities = test_node_identities(2).into_iter();
         let parent = Arc::new(
             Node::create(NodeConfig::new(TransportConfig::direct_udp_advertised(
