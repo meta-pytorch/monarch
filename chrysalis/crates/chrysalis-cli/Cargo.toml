@@ -17,8 +17,8 @@ chrysalis-resolver = { version = "0.0.0", path = "../chrysalis-resolver" }
 clap = { version = "4.6.2", features = ["derive", "env", "string", "unicode", "wrap_help"] }
 derive_more = { version = "2.1.1", features = ["full"] }
 libc = "0.2.186"
-libsql = { version = "0.9.30", features = ["core", "remote", "tls"], default-features = false }
-libsql-sys = "0.9.30"
+libsql = { version = "0.10.0", features = ["core", "remote", "tls"], default-features = false }
+libsql-sys = "0.10.0"
 rcgen = { version = "0.14.10", features = ["x509-parser"] }
 rustyline = { version = "19.0.0", features = ["derive"] }
 tempfile = "3.27.0"
