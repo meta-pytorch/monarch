@@ -15,7 +15,8 @@ import signal
 import subprocess
 import sys
 import time
-from typing import cast, IO, Optional
+import warnings
+from typing import Callable, cast, IO, Optional
 from unittest.mock import patch
 
 import monarch.actor
@@ -28,7 +29,7 @@ from monarch._rust_bindings.monarch_hyperactor.mailbox import (
     UndeliverableMessageEnvelope,
 )
 from monarch._rust_bindings.monarch_hyperactor.supervision import SupervisionError
-from monarch._src.actor import proc_mesh as proc_mesh_mod
+from monarch._src.actor import actor_mesh as actor_mesh_mod, proc_mesh as proc_mesh_mod
 from monarch._src.actor.actor_mesh import (
     _actor_kind,
     ActorKind,
@@ -41,11 +42,13 @@ from monarch._src.actor.proc_mesh import ProcMesh
 from monarch.actor import (
     Actor,
     ActorError,
+    ClientHooks,
     concurrent_endpoint,
     endpoint,
     get_or_spawn_controller,
     MeshFailure,
     Port,
+    set_client_hooks,
 )
 from monarch.config import configured, get_global_config, parametrize_config
 
@@ -181,8 +184,6 @@ class SyncActorWithAsyncSupervise(Actor):
     def ping(self) -> int:
         return 1
 
-    # pyrefly: ignore[bad-override]: the mismatch with the sync base is the
-    # point; spawning this class must be rejected.
     async def __supervise__(self, failure: MeshFailure) -> bool:
         return True
 
@@ -246,7 +247,6 @@ class AsyncActorWithSyncSupervise(Actor):
         return True
 
 
-# Shaped like `RootClientActor`: no endpoints and a sync `__supervise__`.
 class NoEndpointActorWithSyncSupervise(Actor):
     def __supervise__(self, failure: MeshFailure) -> bool:
         return True
@@ -293,8 +293,7 @@ async def test_mismatched_actor_is_rejected_before_native_spawn(
 @isolate_in_subprocess
 async def test_async_actor_may_keep_a_sync_supervise() -> None:
     """Only a sync actor must have a sync `__supervise__` (SA-5). An async
-    actor, or one with no endpoints such as `RootClientActor`, may keep a sync
-    one."""
+    actor, or one with no endpoints, may keep a sync one."""
     proc = spawn_procs_on_this_host({"gpus": 1})
     with_endpoint = proc.spawn("async_sync_supervise", AsyncActorWithSyncSupervise)
     assert await with_endpoint.ping.call_one() == 1
@@ -2480,6 +2479,149 @@ def test_unhandled_fault_hook_runs_atexit() -> None:
             f"file {marker_path} should have contents 'finalized' if the atexit handlers were run"
         )
     os.unlink(marker_path)
+
+
+class RecordingClientHooks(ClientHooks):
+    """Records and handles the client's failures, and absorbs its
+    invalid-reference bounces."""
+
+    def __init__(self) -> None:
+        self.failures: list[MeshFailure] = []
+        self.bounces = 0
+
+    async def __supervise__(self, failure: MeshFailure) -> bool:
+        self.failures.append(failure)
+        return True
+
+    def _handle_invalid_reference(self, message: UndeliverableMessageEnvelope) -> bool:
+        self.bounces += 1
+        return True
+
+
+def wait_until(condition: Callable[[], object], timeout: float = 30.0) -> None:
+    deadline = time.monotonic() + timeout
+    while not condition():
+        assert time.monotonic() < deadline, "timed out waiting for the condition"
+        time.sleep(0.1)
+
+
+@pytest.mark.timeout(60)
+@isolate_in_subprocess
+def test_set_client_hooks() -> None:
+    """Client hooks take effect without starting the client: an async
+    ``__supervise__`` that returns True keeps the failure from
+    ``unhandled_fault_hook``, a ``_handle_invalid_reference`` override receives
+    the client's bounces, and ``None`` restores the defaults, including the
+    deprecated ``unhandled_fault_hook`` with a warning that does not stop the
+    client even under warnings-as-errors."""
+    faults: list[MeshFailure] = []
+
+    def record_fault(failure: MeshFailure) -> None:
+        faults.append(failure)
+
+    monarch.actor.unhandled_fault_hook = record_fault
+    hooks = RecordingClientHooks()
+    set_client_hooks(hooks)
+    assert actor_mesh_mod._client_context.try_get() is None
+    proc = spawn_procs_on_this_host({"gpus": 1})
+    actor = proc.spawn("error", ErrorActor)
+
+    with pytest.raises(SupervisionError):
+        actor.fail_with_supervision_error.call_one().get()
+    with pytest.raises(SupervisionError):
+        actor.check.call_one().get()
+    wait_until(lambda: hooks.failures and hooks.bounces)
+
+    # With the default delivery hook, the next bounce fails the client. The
+    # client handles failures one at a time, so by then any wrongful pass-on of
+    # the first failure would have happened.
+    # The client warns on its own thread, which on a free-threaded build does
+    # not see this thread's `catch_warnings` context, so set the warning filter
+    # and handler for the whole process; the test runs in its own process.
+    warned: list[str] = []
+
+    def record_warning(message: Warning | str, *args: object, **kwargs: object) -> None:
+        warned.append(str(message))
+
+    warnings.showwarning = record_warning
+    warnings.simplefilter("always", FutureWarning)
+    set_client_hooks(None)
+    with pytest.raises(SupervisionError):
+        actor.check.call_one().get()
+    wait_until(lambda: faults)
+    assert any("unhandled_fault_hook is deprecated" in message for message in warned)
+    assert all(fault is not hooks.failures[0] for fault in faults)
+
+    # Under warnings-as-errors, the warning does not keep the hook from running.
+    seen = len(faults)
+    warnings.simplefilter("error", FutureWarning)
+    with pytest.raises(SupervisionError):
+        actor.check.call_one().get()
+    wait_until(lambda: len(faults) > seen)
+    proc.stop().get()
+
+
+class ExitOnBounceHooks(RecordingClientHooks):
+    def _handle_invalid_reference(self, message: UndeliverableMessageEnvelope) -> bool:
+        sys.exit(1)
+
+
+@pytest.mark.timeout(60)
+@isolate_in_subprocess
+def test_client_delivery_hook_sys_exit_fails_the_client() -> None:
+    """A delivery hook that calls ``sys.exit`` fails the client, so that
+    ``__supervise__`` sees the failure, rather than ending the client's event
+    loop silently."""
+    hooks = ExitOnBounceHooks()
+    set_client_hooks(hooks)
+    proc = spawn_procs_on_this_host({"gpus": 1})
+    actor = proc.spawn("error", ErrorActor)
+
+    with pytest.raises(SupervisionError):
+        actor.fail_with_supervision_error.call_one().get()
+    with pytest.raises(SupervisionError):
+        actor.check.call_one().get()
+    wait_until(lambda: len(hooks.failures) >= 2)
+    proc.stop().get()
+
+
+class ExitingClientHooks(ClientHooks):
+    def __supervise__(self, failure: MeshFailure) -> bool:
+        sys.exit(1)
+
+
+def _subprocess_client_hook_exits() -> None:
+    monarch.actor.unhandled_fault_hook = lambda failure: None
+    set_client_hooks(ExitingClientHooks())
+    proc = this_host().spawn_procs({"gpus": 1})
+    actor = proc.spawn("error", ErrorActor)
+    with pytest.raises(SupervisionError):
+        actor.fail_with_supervision_error.call_one().get()
+    # Wait for the interrupt in short sleeps, so that it can land.
+    try:
+        for _ in range(5):
+            time.sleep(5)
+    except KeyboardInterrupt:
+        sys.exit(3)
+
+
+@pytest.mark.timeout(60)
+def test_client_hook_sys_exit_exits_the_process() -> None:
+    """A ``__supervise__`` hook that calls ``sys.exit`` stops the client and
+    interrupts the main thread, rather than ending the client's event loop
+    silently."""
+    ctx = multiprocessing.get_context("spawn")
+    p = ctx.Process(target=_subprocess_client_hook_exits)
+    p.start()
+    p.join(30)
+    assert p.exitcode == 3
+
+
+def test_set_client_hooks_rejects_other_objects() -> None:
+    """``set_client_hooks`` takes only a ``ClientHooks`` or ``None``."""
+    with pytest.raises(TypeError, match="takes a ClientHooks or None"):
+        # pyrefly: ignore[bad-argument-type]: the wrong type is the point.
+        set_client_hooks(object())
 
 
 def subprocess_with_hard_exit(

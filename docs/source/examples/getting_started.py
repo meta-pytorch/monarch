@@ -331,26 +331,24 @@ class SupervisorActor(Actor):
 
 # %%
 # If a MeshFailure is not handled by any __supervise__ in the supervision tree,
-# it will reach the client, where monarch.actor.unhandled_fault_hook will be
-# called with the MeshFailure object. By default, this function exits the process
-# with a KeyboardInterrupt.
+# it reaches the client. By default, the client then exits the process with a
+# KeyboardInterrupt.
 
-# You can overwrite the global unhandled_fault_hook function to customize this
-# behavior. The function can either:
-# - raise any exception (including BaseException) to indicate that the failure was not handled
-# - return any value (including None) to indicate that the failure was handled
+# To customize this, subclass ClientHooks and pass an instance to
+# set_client_hooks. Its __supervise__ receives the failures that reach the
+# client: return True to handle a failure, or False to leave it to the default.
 
-import monarch.actor
+from monarch.actor import ClientHooks, set_client_hooks
 
 
-def my_unhandled_fault_hook(failure: MeshFailure) -> None:
-    # Log it, add metrics, etc.
-    print(f"Mesh failure was not handled: {failure}")
-    # The failure will be ignored unless this hook returns an exception.
+class LoggingClientHooks(ClientHooks):
+    def __supervise__(self, failure: MeshFailure) -> bool:
+        # Log it, add metrics, etc.
+        print(f"Mesh failure was not handled: {failure}")
+        return True
 
 
-# pyre-ignore[9]: Callable is compatible.
-monarch.actor.unhandled_fault_hook = my_unhandled_fault_hook
+set_client_hooks(LoggingClientHooks())
 
 # %%
 # Point-to-Point RDMA
