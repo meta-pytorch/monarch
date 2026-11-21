@@ -14,7 +14,7 @@ on:
       runner:
         description: 'Linux runner to use for the build'
         type: string
-        default: 'linux.4xlarge'
+        default: 'mt-l-x86iavx512-16-128'
 
 concurrency:
   group: build-cpu-${{ inputs.runner }}-${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_number || github.ref }}
@@ -23,7 +23,7 @@ concurrency:
 jobs:
   build-cpu:
     name: Build CPU - No Tensor Engine
-    uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
+    uses: pytorch/test-infra/.github/workflows/linux_job_v3.yml@main
     with:
       timeout: 60
       runner: ${{ inputs.runner }}

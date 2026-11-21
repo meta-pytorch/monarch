@@ -113,7 +113,8 @@ setup_rust_toolchain() {
 }
 
 # Setup sccache for Rust compilation caching.
-# Uses the pytorch ossci-compiler-cache S3 bucket if available.
+# Uses the pytorch ossci-compiler-cache-circleci-v2 S3 bucket if available. OSDC
+# runners reach it through role/arc, which can't write ossci-compiler-cache.
 setup_sccache() {
     # Skip sccache on ROCm — runners lack AWS credentials for the S3 cache backend
     if command -v rocminfo &>/dev/null; then
@@ -128,7 +129,7 @@ setup_sccache() {
         return
     fi
 
-    export SCCACHE_BUCKET=ossci-compiler-cache
+    export SCCACHE_BUCKET=ossci-compiler-cache-circleci-v2
     export SCCACHE_REGION=us-east-1
     export SCCACHE_S3_KEY_PREFIX=monarch
     export SCCACHE_FALLBACK_DISABLE_FILE="${RUNNER_TEMP:-/tmp}/monarch-sccache-disabled"

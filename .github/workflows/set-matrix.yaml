@@ -12,19 +12,22 @@ on:
         description: 'Override default CUDA runner label'
         required: false
         type: string
-        # Matches what pytorch core uses for CUDA GPU smoke tests
-        # (caffe2/.github/workflows/generated-linux-binary-manywheel-nightly.yml).
+        # OSDC (ARC) T4 runner, the equivalent of linux.g4dn.4xlarge.nvidia.gpu
+        # that pytorch core uses for CUDA GPU smoke tests.
         # PR CI builds and tests at CUDA 13.0 because pytorch's own PR/trunk
         # GPU jobs do the same (test-h100.yml runs on cuda13.0); release
         # wheels ship cu132 from build-dist.yml on a CPU runner.
-        default: linux.g4dn.4xlarge.nvidia.gpu
+        default: mt-l-x86iavx512-29-115-t4
     outputs:
-      test-matrix:
-        description: Test matrix (one python version per entry)
-        value: ${{ jobs.set.outputs.test-matrix }}
-      python-test-matrix:
-        description: Python test matrix (test-matrix plus free-threaded py3.14t, with python-version)
-        value: ${{ jobs.set.outputs.python-test-matrix }}
+      cuda-test-matrix:
+        description: CUDA test matrix (one python version per entry), run on OSDC
+        value: ${{ jobs.set.outputs.cuda-test-matrix }}
+      cuda-python-test-matrix:
+        description: CUDA Python test matrix (cuda-test-matrix plus free-threaded py3.14t), run on OSDC
+        value: ${{ jobs.set.outputs.cuda-python-test-matrix }}
+      rocm-test-matrix:
+        description: ROCm test matrix (one python version per entry), empty when ROCm is not tested
+        value: ${{ jobs.set.outputs.rocm-test-matrix }}
       build-matrix:
         description: Build matrix (includes all python versions)
         value: ${{ jobs.set.outputs.build-matrix }}
@@ -33,8 +36,9 @@ jobs:
   set:
     runs-on: ubuntu-latest
     outputs:
-      test-matrix: ${{ steps.set.outputs.test-matrix }}
-      python-test-matrix: ${{ steps.set.outputs.python-test-matrix }}
+      cuda-test-matrix: ${{ steps.set.outputs.cuda-test-matrix }}
+      cuda-python-test-matrix: ${{ steps.set.outputs.cuda-python-test-matrix }}
+      rocm-test-matrix: ${{ steps.set.outputs.rocm-test-matrix }}
       build-matrix: ${{ steps.set.outputs.build-matrix }}
     env:
       IS_PUSH: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
@@ -85,30 +89,37 @@ jobs:
           fi
 
           # Test matrix: ROCm tested on a manual ciflow/rocm tag and on pushes
-          # to main; CUDA otherwise.
+          # to main; CUDA otherwise. CUDA and ROCm are separate outputs because
+          # CUDA runs on OSDC (linux_job_v3) and ROCm stays on its own runners
+          # (linux_job_v2). An empty one skips its job.
+          CUDA_TEST_MATRIX=""
+          ROCM_TEST_MATRIX=""
           if [[ "$IS_ROCM_TAG" == "true" ]]; then
-            TEST_MATRIX="[$ROCM_100, $ROCM_101]"
+            ROCM_TEST_MATRIX="{\"include\": [$ROCM_100, $ROCM_101]}"
           elif [[ "$IS_PUSH" == "true" ]]; then
-            TEST_MATRIX="[$CUDA, $ROCM_100, $ROCM_101]"
+            CUDA_TEST_MATRIX="{\"include\": [$CUDA]}"
+            ROCM_TEST_MATRIX="{\"include\": [$ROCM_100, $ROCM_101]}"
           else
-            TEST_MATRIX="[$CUDA]"
+            CUDA_TEST_MATRIX="{\"include\": [$CUDA]}"
           fi
 
-          # Python test matrix: the test matrix (each entry keeps its own
-          # python-version; ROCm stays on 3.12), plus a free-threaded
+          # CUDA Python test matrix: the CUDA test matrix plus a free-threaded
           # py3.14t CUDA run so GIL-free regressions surface on PRs.
-          PYTHON_TEST_MATRIX=$(echo "$TEST_MATRIX" | jq -c 'map(if has("python-version") then . else . + {"python-version": "3.11"} end)')
-          if [[ "$IS_ROCM_TAG" != "true" ]]; then
-            PYTHON_TEST_MATRIX=$(echo "$PYTHON_TEST_MATRIX" | jq -c --argjson cuda "$CUDA" '. + [$cuda + {"python-version": "3.14t"}]')
+          CUDA_PYTHON_TEST_MATRIX=""
+          if [[ -n "$CUDA_TEST_MATRIX" ]]; then
+            CUDA_PYTHON_TEST_MATRIX=$(echo "$CUDA_TEST_MATRIX" | jq -c --argjson cuda "$CUDA" '.include += [$cuda + {"python-version": "3.14t"}]')
           fi
 
           # Export matrices to job outputs
           {
-            echo 'test-matrix<<EOF'
-            echo "{\"include\": $TEST_MATRIX}"
+            echo 'cuda-test-matrix<<EOF'
+            echo "$CUDA_TEST_MATRIX"
             echo 'EOF'
-            echo 'python-test-matrix<<EOF'
-            echo "{\"include\": $PYTHON_TEST_MATRIX}"
+            echo 'rocm-test-matrix<<EOF'
+            echo "$ROCM_TEST_MATRIX"
+            echo 'EOF'
+            echo 'cuda-python-test-matrix<<EOF'
+            echo "$CUDA_PYTHON_TEST_MATRIX"
             echo 'EOF'
             echo 'build-matrix<<EOF'
             echo "{\"include\": $BUILD_MATRIX}"
