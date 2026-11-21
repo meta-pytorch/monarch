@@ -9,6 +9,7 @@ from __future__ import annotations
 import abc
 import asyncio
 import collections
+import contextlib
 import contextvars
 import functools
 import importlib
@@ -2059,20 +2060,7 @@ class _Actor:
     ) -> Callable[[UndeliverableMessageEnvelope], Any] | None:
         """Select the generic override, or the hook for the root failure kind."""
         _set_context(cx)
-        callback = getattr(self.instance, "_handle_delivery_failure_event", None)
-        if _is_user_override(callback):
-            return callback
-        failure = message.root_delivery_failure()
-        if failure is None:
-            return None
-        if failure.kind == DeliveryFailureKind.InvalidReference:
-            hook = "_handle_invalid_reference"
-        elif failure.kind == DeliveryFailureKind.Expired:
-            hook = "_handle_expired_delivery"
-        else:
-            hook = "_handle_undeliverable_message"
-        callback = getattr(self.instance, hook, None)
-        return callback if _is_user_override(callback) else None
+        return _delivery_failure_hook(self.instance, message)
 
     def _run_undeliverable(self, item: QueuedUndeliverable) -> None:
         """Run a sync actor's undeliverable-message callback on its driver and
@@ -2203,15 +2191,9 @@ F = TypeVar("F", bound=Callable[..., Any])
 
 
 def _doc_stub(fn: F) -> F:
-    """Mark a method on ``Actor`` as a documentation-only stub.
-
-    The base class declares ``__cleanup__`` and ``__supervise__`` so that
-    ``help()`` and IDEs can surface the docstring, but subclasses that do
-    not override them must be treated as if they provided no implementation.
-    Runtime code that detects user overrides (:func:`_actor_kind` and the
-    dispatch in :class:`_Actor`) consults this marker and ignores stub-marked
-    methods.
-    """
+    """Mark a hook that ``Actor`` or ``ClientHooks`` declares only for its
+    documentation, so that :func:`_is_user_override` does not count it as an
+    override."""
     # pyre-ignore[16]: function attributes are dynamic
     fn._monarch_doc_stub = True
     return fn
@@ -2220,6 +2202,27 @@ def _doc_stub(fn: F) -> F:
 def _is_user_override(method: Any) -> bool:
     """Return True if ``method`` is a real user override, not a doc stub."""
     return method is not None and not getattr(method, "_monarch_doc_stub", False)
+
+
+def _delivery_failure_hook(
+    hooks: object, message: UndeliverableMessageEnvelope
+) -> Callable[[UndeliverableMessageEnvelope], Any] | None:
+    """The generic delivery-failure override on ``hooks``, or its override for
+    the root failure kind, or None if it has neither."""
+    callback = getattr(hooks, "_handle_delivery_failure_event", None)
+    if _is_user_override(callback):
+        return callback
+    failure = message.root_delivery_failure()
+    if failure is None:
+        return None
+    if failure.kind == DeliveryFailureKind.InvalidReference:
+        hook = "_handle_invalid_reference"
+    elif failure.kind == DeliveryFailureKind.Expired:
+        hook = "_handle_expired_delivery"
+    else:
+        hook = "_handle_undeliverable_message"
+    callback = getattr(hooks, hook, None)
+    return callback if _is_user_override(callback) else None
 
 
 def _actor_kind(Class: type) -> ActorKind:
@@ -2410,7 +2413,7 @@ class Actor(MeshTrait):
         return False
 
     @_doc_stub
-    def __supervise__(self, failure: MeshFailure) -> bool:
+    def __supervise__(self, failure: MeshFailure) -> bool | Awaitable[bool]:
         """Called when the actor observes a failure in a resource that it
         owns. A resource is a host, proc, actor, or meshes of these.
         If a truthy value is returned, the failure is considered handled and will not
@@ -2691,20 +2694,126 @@ def current_size() -> Dict[str, int]:
     return {k: r[k] for k in r}
 
 
+class ClientHooks:
+    """Hooks that customize how this process's client handles failures.
+
+    The client is the actor behind code that runs outside any actor: it owns
+    the meshes that code spawns and sends the messages that code sends.
+    Override the hooks you need, sync or async, and pass an instance to
+    :func:`set_client_hooks`. The client keeps its default for any hook you do
+    not override, and whenever your hook returns False. Hooks run on the
+    client actor's own thread, not yours, so guard any state they share with
+    your code. Mark overrides with ``@override`` (from ``typing_extensions``
+    before Python 3.12) so that a type checker catches a misspelled name::
+
+        class Hooks(ClientHooks):
+            @override
+            def _handle_invalid_reference(
+                self, message: UndeliverableMessageEnvelope
+            ) -> bool:
+                failure = message.root_delivery_failure()
+                return failure is not None and failure.invalid_reference_reason in (
+                    InvalidReferenceReason.ActorStopped,
+                    InvalidReferenceReason.ActorFailed,
+                )
+
+        set_client_hooks(Hooks())
+    """
+
+    @_doc_stub
+    def __supervise__(self, failure: MeshFailure) -> bool | Awaitable[bool]:
+        """Handle a failure of a mesh the client owns, or of the client itself,
+        such as a fatal delivery failure that no delivery hook absorbed. Return
+        True if you handled it; otherwise the client passes it to
+        :func:`unhandled_fault_hook`. If this raises, the client skips
+        :func:`unhandled_fault_hook` and stops, interrupting your main thread as
+        an unhandled fault does. See :meth:`Actor.__supervise__`."""
+        return False
+
+    @_doc_stub
+    def _handle_delivery_failure_event(
+        self, message: UndeliverableMessageEnvelope
+    ) -> bool | Awaitable[bool]:
+        """Handle any delivery failure in place of the kind-specific hooks; see
+        :meth:`Actor._handle_delivery_failure_event`."""
+        return False
+
+    @_doc_stub
+    def _handle_invalid_reference(
+        self, message: UndeliverableMessageEnvelope
+    ) -> bool | Awaitable[bool]:
+        """Handle a message the client sent to an invalid destination, such as
+        a stopped or failed actor; see :meth:`Actor._handle_invalid_reference`."""
+        return False
+
+    @_doc_stub
+    def _handle_expired_delivery(
+        self, message: UndeliverableMessageEnvelope
+    ) -> bool | Awaitable[bool]:
+        """Handle a message the client sent that exceeded its delivery hop TTL;
+        see :meth:`Actor._handle_expired_delivery`."""
+        return False
+
+    @_doc_stub
+    def _handle_undeliverable_message(
+        self, message: UndeliverableMessageEnvelope
+    ) -> bool | Awaitable[bool]:
+        """Handle a transport failure or a destination port whose recipient is
+        gone; see :meth:`Actor._handle_undeliverable_message`."""
+        return False
+
+
+async def _call_client_hook(hook: Callable[..., Any], *args: Any) -> Any:
+    """Call a sync or async client hook. A `SystemExit` that escaped the
+    client's callback task would end its event loop without a verdict, so
+    wrap any `BaseException` that is not an `Exception` in
+    `UnhandledFaultHookException`."""
+    from monarch._src.actor.supervision import UnhandledFaultHookException
+
+    try:
+        with fake_sync_state():
+            result = hook(*args)
+        if inspect.isawaitable(result):
+            result = await result
+    except (Exception, asyncio.CancelledError):
+        raise
+    except BaseException as e:  # noqa: B036 - catch SystemExit from sys.exit; re-raised wrapped
+        raise UnhandledFaultHookException(repr(e)) from e
+    return result
+
+
 class RootClientActor(Actor):
     name: str = "client"
+    _hooks: ClientHooks = ClientHooks()
 
-    def __supervise__(self, failure: MeshFailure) -> bool:
+    async def __supervise__(self, failure: MeshFailure) -> bool:
         import os
         import socket
         import sys
         from datetime import datetime
 
+        from monarch._src.actor import supervision
         from monarch._src.actor.supervision import UnhandledFaultHookException
         from monarch.actor import unhandled_fault_hook  # pyre-ignore
 
         try:
-            unhandled_fault_hook(failure)
+            if await _call_client_hook(self._hooks.__supervise__, failure):
+                return True
+            if unhandled_fault_hook is not supervision.unhandled_fault_hook:
+                # Under warnings-as-errors, still call the hook.
+                with contextlib.suppress(FutureWarning):
+                    warnings.warn(
+                        "Replacing monarch.actor.unhandled_fault_hook is deprecated "
+                        "and will stop working in a future release. Override "
+                        "__supervise__ in a ClientHooks subclass and pass an "
+                        "instance to monarch.actor.set_client_hooks() instead.",
+                        FutureWarning,
+                        stacklevel=1,
+                    )
+            with fake_sync_state():
+                unhandled_fault_hook(failure)
+        except asyncio.CancelledError:
+            raise
         except BaseException as e:  # noqa: B036 - catch SystemExit from sys.exit; re-raised wrapped
             pid = os.getpid()
             hostname = socket.gethostname()
@@ -2722,8 +2831,16 @@ class RootClientActor(Actor):
             )
 
             instant_event(message)
+            if isinstance(e, UnhandledFaultHookException):
+                raise
             raise UnhandledFaultHookException(repr(e)) from e
         return True
+
+    async def _handle_delivery_failure_event(
+        self, message: UndeliverableMessageEnvelope
+    ) -> bool:
+        hook = _delivery_failure_hook(self._hooks, message)
+        return hook is not None and bool(await _call_client_hook(hook, message))
 
     @staticmethod
     def _pickled_init_args() -> FrozenBuffer:
@@ -2736,3 +2853,16 @@ class RootClientActor(Actor):
             allow_tensor_engine_references=False,
         )
         return state.buffer()
+
+
+def set_client_hooks(hooks: ClientHooks | None) -> None:
+    """Set this process's client hooks, replacing any earlier ones; ``None``
+    restores the defaults. You may call this before or after the client starts;
+    it does not start the client. See :class:`ClientHooks`."""
+    if hooks is None:
+        hooks = ClientHooks()
+    if not isinstance(hooks, ClientHooks):
+        raise TypeError(
+            f"set_client_hooks() takes a ClientHooks or None, not {type(hooks).__name__}"
+        )
+    RootClientActor._hooks = hooks

@@ -251,6 +251,11 @@ Types used for error handling and supervision in actor meshes.
 
 .. autofunction:: unhandled_fault_hook
 
+.. autoclass:: ClientHooks
+   :members: __supervise__, _handle_delivery_failure_event, _handle_invalid_reference, _handle_expired_delivery, _handle_undeliverable_message
+
+.. autofunction:: set_client_hooks
+
 
 Telemetry
 =========

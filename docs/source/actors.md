@@ -861,6 +861,7 @@ If `__supervise__` returns a truthy value, the failure will be considered handle
 and not delivered further up the chain. If it returns a falsey value (including None, if there is no return),
 the failure will be delivered to that Actor’s owner recursively until it reaches
 the original client. If it reaches the original client with no handling, it will crash.
+To handle failures in the client, pass a `ClientHooks` subclass that overrides `__supervise__` to `monarch.actor.set_client_hooks()`.
 If `__supervise__` raises an Exception of any kind, it will be considered a new supervision event to be delivered to that Actor’s owner. Its cause will be set to the supervision event it was handling. This behavior matches the special method `__exit__` for context managers. Both sync and async overrides observe this behavior.
 
 We make no guarantees about how many times `__supervise__` will be called.
