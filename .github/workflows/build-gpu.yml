@@ -18,13 +18,13 @@ jobs:
   build:
     name: Build ${{ matrix.name }} (py${{ matrix.python-version }})
     needs: set-matrix
-    uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
+    uses: pytorch/test-infra/.github/workflows/linux_job_v3.yml@main
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.set-matrix.outputs.build-matrix) }}
     with:
       timeout: 60
-      runner: linux.c7i.2xlarge
+      runner: mt-l-x86iavx512-8-64
       docker-image: ${{ matrix.docker-image }}
       submodules: recursive
       upload-artifact: monarch-${{ matrix.name }}-${{ github.sha }}-py${{ matrix.python-version }}

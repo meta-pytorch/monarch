@@ -89,12 +89,12 @@ jobs:
       #
       # Building a wheel needs the CUDA toolkit (nvcc, headers, libs) but not
       # host-GPU access. The cuda13.2 builder image supplies the toolkit; we
-      # set gpu-arch-type=cpu so test-infra's linux_job_v2.yml skips the
-      # `setup-nvidia` step that mounts `--gpus all` and triggers
-      # nvidia-container-cli's host-driver-vs-CUDA version check. Passing an
-      # already-tagged docker-image makes test-infra use it verbatim instead
-      # of auto-suffixing it from gpu-arch-type/version.
-      runner: linux.c7i.2xlarge
+      # set gpu-arch-type=cpu so test-infra's linux_job_v3.yml doesn't ask for
+      # `--gpus all`, which would trigger nvidia-container-cli's
+      # host-driver-vs-CUDA version check. Passing an already-tagged
+      # docker-image makes test-infra use it verbatim instead of
+      # auto-suffixing it from gpu-arch-type/version.
+      runner: mt-l-x86iavx512-8-64
       docker-image: 'pytorch/manylinux2_28-builder:cuda13.2'
       torch-spec: ${{ needs.prepare-release.outputs.release_type != 'nightly' && 'torch==2.15.0 --extra-index-url https://download.pytorch.org/whl/cu132' || '--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu132' }}
       gpu-arch-type: cpu
@@ -109,11 +109,12 @@ jobs:
     with:
       timeout: 120
       python-versions: '["3.11", "3.12", "3.13", "3.14", "3.14t"]'
-      runner: linux.arm64.2xlarge
+      runner: mt-l-arm64g3-16-62
       docker-image: 'pytorch/manylinuxaarch64-builder:cuda13.2'
       torch-spec: ${{ needs.prepare-release.outputs.release_type != 'nightly' && 'torch==2.15.0 --extra-index-url https://download.pytorch.org/whl/cu132' || '--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu132' }}
-      gpu-arch-type: cuda
-      gpu-arch-version: '13.2'
+      gpu-arch-type: cpu
+      gpu-arch-version: ''
+      arch-label: cuda13.2
       version: ${{ needs.prepare-release.outputs.version }}
       platform: aarch64
 

@@ -22,7 +22,7 @@ on:
       runner:
         description: 'Runner to use for the build'
         type: string
-        default: 'linux.g5.4xlarge.nvidia.gpu'
+        default: 'mt-l-x86aavx2-11-41-a10g'
       docker-image:
         description: 'Docker image to use (default lets test-infra auto-select based on gpu-arch)'
         type: string
@@ -51,7 +51,7 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ${{ fromJson(inputs.python-versions) }}
-    uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
+    uses: pytorch/test-infra/.github/workflows/linux_job_v3.yml@main
     with:
       timeout: ${{ inputs.timeout }}
       runner: ${{ inputs.runner }}
