@@ -9,7 +9,8 @@
 //! Prepare connection addresses and host-side listeners for one proc launch.
 //!
 //! The [`BootstrapProcManager`](super::BootstrapProcManager) calls
-//! [`ProcConnectionSetup::create_unix`] or
+//! [`ProcConnectionSetup::create_unix`],
+//! [`ProcConnectionSetup::create_tcp`], or
 //! [`ProcConnectionSetup::create_hybrid_vsock`] from its `spawn` method.
 //! This module selects the addresses for messages in both directions and
 //! for readiness, creates the additional host-side listeners needed by the
@@ -98,6 +99,12 @@
 //!
 //! proc listener ◄───────── Unix ───────── host
 //! ```
+//!
+//! If the proc has no Unix socket ([`UnixServeAddr::Unavailable`]: no socket
+//! directory, or a socket path that does not fit a Unix socket address), the
+//! bootstrap manager prepares the proc with loopback TCP instead: the proc listens on an ephemeral port and reports
+//! readiness to a TCP listener. Sibling procs cannot dial it directly, so
+//! their messages to it pass through the host.
 //!
 //! ## Firecracker's hybrid vsock
 //!
@@ -230,6 +237,7 @@
 //! - **RCH-1 (Unix addresses):** Use the supplied host backend address,
 //!   create a Unix readiness listener, and derive the proc's listen address
 //!   from its ID in the manager's socket directory. Retain no VM resources.
+//!   The loopback-TCP fallback follows the same rule with TCP listeners.
 //! - **RCH-2 (hybrid addresses and routing):** The backend and readiness
 //!   addresses use native vsock on [`HybridVsockProc::HOST_CID`], at
 //!   [`HybridVsockProc::BACKEND_PORT`] and [`HybridVsockProc::READINESS_PORT`].
@@ -243,7 +251,8 @@
 //!   different VMs must not give them the same host socket paths.
 //! - **RCH-4 (invalid paths fail during preparation):** Reject socket paths
 //!   that do not fit a Unix socket address, releasing partial VM resources.
-//!   The manager prepares connections before calling the launcher.
+//!   The manager prepares connections before calling the launcher. A Unix
+//!   proc whose path does not fit uses loopback TCP instead.
 //! - **RCH-5 (resource lifetime):** The setup owns the per-VM resources until
 //!   the manager transfers them to its exit monitor. Launch failure releases
 //!   them; cancellation or unwinding drops them. Proc exit, including loss of
@@ -271,6 +280,7 @@ use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::ChannelRx;
 use hyperactor::channel::ChannelTransport;
+use hyperactor::channel::TcpMode;
 use hyperactor::gateway::Gateway;
 
 use super::hybrid_vsock::HybridVsockProc;
@@ -350,27 +360,42 @@ impl ProcConnectionSetup {
     /// Prepares communication for a proc that will use Unix sockets.
     ///
     /// The proc will send messages to the host's existing listener at
-    /// `host_backend`. This function chooses where the proc will listen for
-    /// incoming messages and opens a host listener for its readiness report.
+    /// `host_backend` and listen for incoming messages at `serve_addr`,
+    /// obtained from [`UnixServeAddr::Available`]. This function opens a
+    /// host listener for its readiness report.
     ///
     /// Returns the three addresses for the proc's bootstrap payload and the
     /// readiness receiver the manager will use. The proc opens its own message
-    /// listener during startup, at the path derived from its ID in
-    /// `socket_dir`.
+    /// listener during startup.
     pub(super) fn create_unix(
-        proc_id: &ProcAddr,
-        socket_dir: &Path,
+        serve_addr: ChannelAddr,
         host_backend: ChannelAddr,
     ) -> Result<Self, HostError> {
-        // RCH-1, RCH-4: choose and validate the proc's Unix listen address.
-        // This computes an address; the proc opens the listener during startup.
-        let serve_addr = super::local_proc_addr(socket_dir, proc_id.id())
-            .map_err(|error| HostError::ProcessConfigurationFailure(proc_id.clone(), error))?
-            .0;
+        Self::create_direct(serve_addr, ChannelTransport::Unix, host_backend)
+    }
 
+    /// Prepares communication for a proc that will listen on loopback TCP.
+    ///
+    /// The bootstrap manager uses this when the proc has no Unix socket
+    /// ([`UnixServeAddr::Unavailable`]). The proc binds an ephemeral port
+    /// and reports the bound address in its readiness report. Sibling procs
+    /// find no socket for it in the socket directory, so they reach it
+    /// through the host.
+    pub(super) fn create_tcp(host_backend: ChannelAddr) -> Result<Self, HostError> {
+        let transport = ChannelTransport::Tcp(TcpMode::Localhost);
+        Self::create_direct(ChannelAddr::any(transport.clone()), transport, host_backend)
+    }
+
+    /// Shared by [`Self::create_unix`] and [`Self::create_tcp`]: the proc
+    /// sends messages to `host_backend`, listens on `serve_addr`, and reports
+    /// readiness to a new host listener on `readiness_transport`.
+    fn create_direct(
+        serve_addr: ChannelAddr,
+        readiness_transport: ChannelTransport,
+        host_backend: ChannelAddr,
+    ) -> Result<Self, HostError> {
         // RCH-1: open the host listener for the readiness report.
-        let (readiness_addr, readiness_rx) =
-            channel::serve(ChannelAddr::any(ChannelTransport::Unix))?;
+        let (readiness_addr, readiness_rx) = channel::serve(ChannelAddr::any(readiness_transport))?;
 
         Ok(Self {
             proc: ProcStartupAddresses {
@@ -381,7 +406,7 @@ impl ProcConnectionSetup {
             },
             host: HostLaunchResources {
                 readiness_rx,
-                resources: ProcResources::Unix,
+                resources: ProcResources::Direct,
             },
         })
     }
@@ -432,11 +457,37 @@ impl ProcConnectionSetup {
     }
 }
 
+/// The Unix socket a proc will listen on, or why it has none.
+pub(crate) enum UnixServeAddr {
+    /// The socket derived from the proc's ID in the manager's socket
+    /// directory.
+    Available(ChannelAddr),
+    /// The proc cannot listen on a Unix socket: the manager has no socket
+    /// directory, or the derived path does not fit a Unix socket address.
+    Unavailable(anyhow::Error),
+}
+
+impl UnixServeAddr {
+    /// Derives the socket for `proc_id` in `socket_dir`. This computes an
+    /// address; the proc opens the listener during startup.
+    pub(crate) fn new(socket_dir: Option<&Path>, proc_id: &ProcAddr) -> Self {
+        // RCH-1, RCH-4: choose and validate the proc's Unix listen address.
+        let Some(socket_dir) = socket_dir else {
+            return Self::Unavailable(anyhow::anyhow!("no socket directory"));
+        };
+        match super::local_proc_addr(socket_dir, proc_id.id()) {
+            Ok((addr, _)) => Self::Available(addr),
+            Err(err) => Self::Unavailable(err),
+        }
+    }
+}
+
 /// Host resources the bootstrap manager keeps until launch fails
 /// or the proc exits.
 pub(crate) enum ProcResources {
-    /// Uses the host's existing message listener; nothing extra to retain here.
-    Unix,
+    /// A Unix or loopback-TCP proc that uses the host's existing message
+    /// listener; nothing extra to retain here.
+    Direct,
 
     /// A directory for this VM's sockets and a handle to the mailbox
     /// server task serving `<dir>/v.sock_BACKEND_PORT` on the host
@@ -453,7 +504,7 @@ impl ProcResources {
     /// The VMM socket path supplied to the launcher for a hybrid-vsock proc.
     pub(crate) fn vsock_uds_path(&self) -> Option<PathBuf> {
         match self {
-            Self::Unix => None,
+            Self::Direct => None,
             Self::HybridVsock(resources) => Some(resources.uds()),
         }
     }
@@ -471,7 +522,7 @@ impl ProcResources {
     pub(crate) async fn release(self) -> Option<ReleaseOutcome> {
         // RCH-5, RCH-6: only hybrid setups retain a per-VM server to release.
         match self {
-            Self::Unix => None,
+            Self::Direct => None,
             Self::HybridVsock(resources) => Some(resources.release().await),
         }
     }

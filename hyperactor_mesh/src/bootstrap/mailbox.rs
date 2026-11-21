@@ -31,13 +31,14 @@ use hyperactor::port::Port;
 /// Dials local procs directly through a configured socket directory.
 ///
 /// A same-host destination is direct-dialable when its deterministic socket
-/// exists in `socket_dir`. Other destinations, and every actor status message,
+/// exists in `socket_dir`. Without a socket directory, no destination is
+/// direct-dialable. Other destinations, and every actor status message,
 /// are routed through the backend sender to the host gateway, which answers
 /// status queries for a proc that has exited.
 #[derive(Debug)]
 pub(crate) struct LocalProcDialer {
     local_addr: ChannelAddr,
-    socket_dir: PathBuf,
+    socket_dir: Option<PathBuf>,
     backend_sender: MailboxClient,
     local_senders: RwLock<HashMap<Uid, MailboxClient>>,
 }
@@ -45,11 +46,11 @@ pub(crate) struct LocalProcDialer {
 impl LocalProcDialer {
     /// Create a new local proc dialer. Procs with a destination address of
     /// `local_addr` are dialed through direct sockets when present in
-    /// `socket_dir`. Messages to other procs are forwarded through the backend
-    /// sender.
+    /// `socket_dir`. Messages to other procs, and all messages when
+    /// `socket_dir` is `None`, are forwarded through the backend sender.
     pub(crate) fn new(
         local_addr: ChannelAddr,
-        socket_dir: PathBuf,
+        socket_dir: Option<PathBuf>,
         backend_sender: MailboxClient,
     ) -> Self {
         Self {
@@ -98,7 +99,8 @@ impl MailboxSender for LocalProcDialer {
             }
 
             // Host-owned service procs do not bind deterministic child sockets.
-            if let Ok((local_addr, path)) = super::local_proc_addr(&self.socket_dir, proc_ref.id())
+            if let Some(socket_dir) = &self.socket_dir
+                && let Ok((local_addr, path)) = super::local_proc_addr(socket_dir, proc_ref.id())
                 && path.exists()
             {
                 let mut senders = self.local_senders.write().unwrap();
@@ -148,7 +150,7 @@ mod tests {
 
     fn recording_dialer(
         local_addr: ChannelAddr,
-        socket_dir: PathBuf,
+        socket_dir: Option<PathBuf>,
     ) -> (LocalProcDialer, ChannelRx<MessageEnvelope>) {
         let (backend_addr, backend_rx) =
             channel::serve::<MessageEnvelope>(ChannelTransport::Unix.any()).unwrap();
@@ -172,7 +174,7 @@ mod tests {
         let (_second_addr, mut second_rx) =
             channel::serve::<MessageEnvelope>(second_serve).unwrap();
         let (proc_dialer, _backend_rx) =
-            recording_dialer(local_addr.clone(), dir.path().to_owned());
+            recording_dialer(local_addr.clone(), Some(dir.path().to_owned()));
 
         let first_actor_id = first.actor_addr("actor");
         let second_actor_id = second.actor_addr("actor");
@@ -208,7 +210,7 @@ mod tests {
         let local_addr: ChannelAddr = "tcp:3.4.5.6:123".parse().unwrap();
         let sender = hyperactor::ProcAddr::instance(local_addr.clone(), "sender");
         let (proc_dialer, mut backend_rx) =
-            recording_dialer(local_addr.clone(), dir.path().to_owned());
+            recording_dialer(local_addr.clone(), Some(dir.path().to_owned()));
         let (return_handle, _return_rx) = Mailbox::new(test_actor_id("world_0", "proc"))
             .open_port::<Undeliverable<MessageEnvelope>>();
 
@@ -240,7 +242,7 @@ mod tests {
         let (_sibling_addr, mut sibling_rx) =
             channel::serve::<MessageEnvelope>(sibling_serve).unwrap();
         let (proc_dialer, mut backend_rx) =
-            recording_dialer(local_addr.clone(), dir.path().to_owned());
+            recording_dialer(local_addr.clone(), Some(dir.path().to_owned()));
         let (return_handle, _return_rx) = Mailbox::new(test_actor_id("world_0", "proc"))
             .open_port::<Undeliverable<MessageEnvelope>>();
 
@@ -282,7 +284,7 @@ mod tests {
         let (singleton_addr, _) = local_proc_addr(dir.path(), singleton.id()).unwrap();
         let (_singleton_addr, mut singleton_rx) =
             channel::serve::<MessageEnvelope>(singleton_addr).unwrap();
-        let (proc_dialer, _backend_rx) = recording_dialer(local_addr, dir.path().to_owned());
+        let (proc_dialer, _backend_rx) = recording_dialer(local_addr, Some(dir.path().to_owned()));
         let (return_handle, _return_rx) = Mailbox::new(test_actor_id("world_0", "proc"))
             .open_port::<Undeliverable<MessageEnvelope>>();
 
@@ -299,12 +301,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_proc_dialer_without_socket_dir_uses_backend() {
+        let dir = tempfile::tempdir().unwrap();
+        let local_addr: ChannelAddr = "tcp:3.4.5.6:123".parse().unwrap();
+        let sender = hyperactor::ProcAddr::instance(local_addr.clone(), "sender");
+        let sibling = hyperactor::ProcAddr::instance(local_addr.clone(), "sibling");
+        let (sibling_serve, _) = local_proc_addr(dir.path(), sibling.id()).unwrap();
+        let _sibling = channel::serve::<MessageEnvelope>(sibling_serve).unwrap();
+        let (proc_dialer, mut backend_rx) = recording_dialer(local_addr, None);
+        let (return_handle, _return_rx) = Mailbox::new(test_actor_id("world_0", "proc"))
+            .open_port::<Undeliverable<MessageEnvelope>>();
+
+        let envelope = MessageEnvelope::new(
+            sender.actor_addr("actor"),
+            sibling.actor_addr("actor").port_addr(0.into()),
+            wirevalue::Any::serialize(&()).unwrap(),
+            Flattrs::new(),
+        );
+        proc_dialer.post(envelope, return_handle);
+
+        let forwarded = backend_rx.recv().await.unwrap();
+        assert_eq!(
+            forwarded.dest().actor_addr().proc_addr(),
+            sibling,
+            "without a socket dir, the existing sibling socket should not be dialed"
+        );
+    }
+
+    #[tokio::test]
     async fn test_proc_dialer_uses_backend_for_missing_or_remote_proc() {
         let dir = tempfile::tempdir().unwrap();
         let local_addr: ChannelAddr = "tcp:3.4.5.6:123".parse().unwrap();
         let sender = hyperactor::ProcAddr::instance(local_addr.clone(), "sender");
         let missing = hyperactor::ProcAddr::instance(local_addr.clone(), "missing");
-        let (proc_dialer, mut backend_rx) = recording_dialer(local_addr, dir.path().to_owned());
+        let (proc_dialer, mut backend_rx) =
+            recording_dialer(local_addr, Some(dir.path().to_owned()));
         let (return_handle, _return_rx) = Mailbox::new(test_actor_id("world_0", "proc"))
             .open_port::<Undeliverable<MessageEnvelope>>();
 
