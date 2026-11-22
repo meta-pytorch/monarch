@@ -14,7 +14,7 @@ on:
       runner:
         description: 'Linux runner to use for type checking (small by default; bump if pyright OOMs indexing torch)'
         type: string
-        default: 'linux.large'
+        default: 'mt-l-x86iavx512-2-4'
 
 concurrency:
   group: type-check-python-${{ inputs.runner }}-${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_number || github.ref }}
@@ -23,7 +23,7 @@ concurrency:
 jobs:
   type-check-python:
     name: Type Check Python (pyright)
-    uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
+    uses: pytorch/test-infra/.github/workflows/linux_job_v3.yml@main
     with:
       timeout: 30
       runner: ${{ inputs.runner }}
