@@ -73,6 +73,7 @@ use hyperactor::mailbox::monitored_return_handle;
 use hyperactor::ordering::SEQ_INFO;
 use hyperactor::ordering::SeqInfo;
 use hyperactor::ordering::SeqKey;
+use hyperactor::port::ControlPort;
 use hyperactor::port::Port;
 use hyperactor::value_mesh::ValueMesh;
 use hyperactor_config::Flattrs;
@@ -301,17 +302,72 @@ impl CastDomainRef {
         message: M,
         return_undeliverable: bool,
     ) -> anyhow::Result<()> {
+        // Serialize before assigning sequence numbers: a failure after
+        // assignment would leave a gap that stalls this sender's later casts.
         let data = wirevalue::Any::<wirevalue::encoding::Multipart>::serialize(&message)?;
         let (session_id, seqs) = self.sequencing.seqs_for_cast(cx)?;
+        self.send(
+            cx,
+            headers,
+            CastTarget::Handler {
+                port: M::port(),
+                session_id,
+                seqs,
+            },
+            data,
+            return_undeliverable,
+        )
+    }
+
+    /// Cast `message` to the control port `port` of every member of this
+    /// domain, such as [`ControlPort::Status`] with a
+    /// [`hyperactor::StatusMessage`].
+    ///
+    /// Each destination receives the message directly, as a message posted to
+    /// its control port does: outside the sender's order for that destination
+    /// and outside the destination's work queue, so a busy destination's
+    /// runtime still handles it.
+    ///
+    /// Reply ports in `message` are not split: each destination replies
+    /// directly to the port's owner. A [`hyperactor::PortRef`] therefore
+    /// receives one reply per destination. A [`hyperactor::OncePortRef`] made
+    /// by opening a one-shot port receives only the first reply; to receive
+    /// one from every destination, attest it over a port that accepts many,
+    /// with [`hyperactor::OncePortRef::attest_reducible`] and no reducer.
+    pub fn cast_control<M: Serialize + Named>(
+        &self,
+        cx: &impl context::Actor,
+        headers: Flattrs,
+        port: ControlPort,
+        message: M,
+    ) -> anyhow::Result<()> {
+        self.send(
+            cx,
+            headers,
+            CastTarget::Control {
+                port,
+                region: self.sequencing.region.clone(),
+            },
+            wirevalue::Any::<wirevalue::encoding::Multipart>::serialize(&message)?,
+            true,
+        )
+    }
+
+    fn send(
+        &self,
+        cx: &impl context::Actor,
+        headers: Flattrs,
+        target: CastTarget,
+        data: wirevalue::Any<wirevalue::encoding::Multipart>,
+        return_undeliverable: bool,
+    ) -> anyhow::Result<()> {
         let cast_message = CastMessage {
             cast_domain_id: self.id.clone(),
             sender: cx.mailbox().actor_addr().clone(),
-            session_id,
-            seqs,
+            target,
             #[cfg(test)]
             lineage: Vec::new(),
             headers,
-            dest_port: M::port(),
             data,
             return_undeliverable,
         };
@@ -1112,17 +1168,13 @@ struct CastMessage {
     cast_domain_id: CastDomainId,
     /// Actor that initiated the cast.
     sender: ActorAddr,
-    /// Sender-side sequencer session for this cast.
-    session_id: Uuid,
-    /// Sequence numbers for the destinations in the current routing subtree.
-    seqs: ValueMesh<u64>,
+    /// The port on each destination in the current routing subtree.
+    target: CastTarget,
     /// Test-only path of actor addresses traversed so far.
     #[cfg(test)]
     lineage: Vec<ActorAddr>,
     /// Message headers.
     headers: Flattrs,
-    /// The target port index on each destination actor.
-    dest_port: u64,
     /// The serialized message data.
     data: wirevalue::Any<wirevalue::encoding::Multipart>,
     /// Whether failed delivery should be returned to the originating sender.
@@ -1130,6 +1182,57 @@ struct CastMessage {
 }
 
 wirevalue::register_type!(CastMessage);
+
+/// The port that a cast reaches on each destination in a routing subtree, and
+/// the order in which it does.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+enum CastTarget {
+    /// The handler port with index `port`, in the sender's order for each
+    /// destination.
+    Handler {
+        port: u64,
+        /// Sender-side sequencer session for this cast.
+        session_id: Uuid,
+        /// One sequence number per destination.
+        seqs: ValueMesh<u64>,
+    },
+    /// A control port, reached directly, outside the sender's order and the
+    /// destination's work queue.
+    Control {
+        port: ControlPort,
+        /// The destinations' region.
+        region: Region,
+    },
+}
+
+impl CastTarget {
+    /// The destinations' region.
+    fn region(&self) -> &Region {
+        match self {
+            Self::Handler { seqs, .. } => seqs.region(),
+            Self::Control { region, .. } => region,
+        }
+    }
+
+    /// The target for the destinations in `region`, a subregion of this one.
+    fn sliced(&self, region: Region) -> Self {
+        match self {
+            Self::Handler {
+                port,
+                session_id,
+                seqs,
+            } => Self::Handler {
+                port: *port,
+                session_id: *session_id,
+                seqs: seqs.sliced_unchecked(region),
+            },
+            Self::Control { port, .. } => Self::Control {
+                port: *port,
+                region,
+            },
+        }
+    }
+}
 
 #[async_trait]
 impl Handler<CastMessage> for CastActor {
@@ -1179,11 +1282,21 @@ impl Handler<CastMessage> for CastActor {
 
 struct CastDelivery<'a> {
     sender: &'a ActorAddr,
-    session_id: Uuid,
-    seq: u64,
+    port: DeliveryPort,
     headers: &'a Flattrs,
-    dest_port: u64,
     return_undeliverable: bool,
+}
+
+/// The port that one destination receives a cast on.
+enum DeliveryPort {
+    /// A handler port, with the destination's sequence number for this cast.
+    Handler {
+        port: u64,
+        session_id: Uuid,
+        seq: u64,
+    },
+    /// A control port, reached directly.
+    Control(ControlPort),
 }
 
 // HOT PATH: Be mindful of performance when making changes here.
@@ -1208,9 +1321,19 @@ fn deliver_to_destination(
     let mut headers = delivery.headers.clone();
     headers.set(CAST_POINT, destination.point_in_domain.clone());
     headers.set(CAST_ORIGINATING_SENDER, delivery.sender.clone());
-    let seq_info = SeqInfo::Session {
-        session_id: delivery.session_id,
-        seq: delivery.seq,
+    let (dest, seq_info) = match delivery.port {
+        DeliveryPort::Handler {
+            port,
+            session_id,
+            seq,
+        } => (
+            destination.actor.port_addr(Port::handler_id(port, None)),
+            SeqInfo::Session { session_id, seq },
+        ),
+        DeliveryPort::Control(port) => (
+            destination.actor.port_addr(Port::control(port)),
+            SeqInfo::Direct,
+        ),
     };
     headers.set(SEQ_INFO, seq_info.clone());
 
@@ -1220,9 +1343,6 @@ fn deliver_to_destination(
     #[cfg(test)]
     headers.set(CAST_LINEAGE, lineage.actors());
 
-    let dest = destination
-        .actor
-        .port_addr(Port::handler_id(delivery.dest_port, None));
     hyperactor::mailbox::headers::stamp_sender_actor_id_hash(&mut headers, delivery.sender);
     hyperactor::mailbox::headers::stamp_sender_actor_id(
         &mut headers,
@@ -1264,21 +1384,24 @@ impl CastTree {
         lineage: &ForwardLineage,
     ) -> Result<(), anyhow::Error> {
         anyhow::ensure!(
-            message.seqs.region().num_ranks() >= self.root_node.destinations.len(),
-            "cast subtree must contain a sequence for every local destination"
+            message.target.region().num_ranks() >= self.root_node.destinations.len(),
+            "cast subtree must cover every local destination"
         );
 
         // Split reply ports so that child subtrees reply through this subtree's
-        // local proxy ports instead of directly to the original sender.
+        // local proxy ports instead of directly to the original sender. A
+        // control message's replies go directly to the original sender.
         let mut data = message.data.clone();
-        split_ports(
-            cx,
-            &mut data,
-            SplitFanout {
-                peer_count: self.root_node.destinations.len() + self.children.len(),
-                num_destinations: message.seqs.region().num_ranks(),
-            },
-        )?;
+        if let CastTarget::Handler { .. } = message.target {
+            split_ports(
+                cx,
+                &mut data,
+                SplitFanout {
+                    peer_count: self.root_node.destinations.len() + self.children.len(),
+                    num_destinations: message.target.region().num_ranks(),
+                },
+            )?;
+        }
 
         for child in &self.children {
             let mut port = child.root_node.cast_actor.port();
@@ -1289,36 +1412,39 @@ impl CastTree {
                 CastMessage {
                     cast_domain_id: message.cast_domain_id.clone(),
                     sender: message.sender.clone(),
-                    session_id: message.session_id,
-                    seqs: message
-                        .seqs
-                        .sliced_unchecked(child.remaining_region.clone()),
+                    target: message.target.sliced(child.remaining_region.clone()),
                     #[cfg(test)]
                     lineage: lineage.actors(),
                     headers: message.headers.clone(),
-                    dest_port: message.dest_port,
                     data: data.clone(),
                     return_undeliverable: message.return_undeliverable,
                 },
             );
         }
 
-        for (destination, seq) in self
-            .root_node
-            .destinations
-            .iter()
-            .zip(message.seqs.values())
-        {
+        for (ordinal, destination) in self.root_node.destinations.iter().enumerate() {
             let direct_lineage = lineage.through(&destination.actor);
+            let port = match &message.target {
+                CastTarget::Handler {
+                    port,
+                    session_id,
+                    seqs,
+                } => DeliveryPort::Handler {
+                    port: *port,
+                    session_id: *session_id,
+                    seq: *seqs
+                        .get(ordinal)
+                        .expect("checked: the subtree covers every local destination"),
+                },
+                CastTarget::Control { port, .. } => DeliveryPort::Control(*port),
+            };
 
             deliver_to_destination(
                 cx,
                 &CastDelivery {
                     sender: &message.sender,
-                    session_id: message.session_id,
-                    seq,
+                    port,
                     headers: &message.headers,
-                    dest_port: message.dest_port,
                     return_undeliverable: message.return_undeliverable,
                 },
                 destination,
@@ -1403,6 +1529,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::collections::BTreeSet;
     use std::collections::HashMap;
+    use std::collections::HashSet;
     use std::num::NonZeroUsize;
     use std::sync::Mutex;
     use std::sync::OnceLock;
@@ -1413,6 +1540,7 @@ mod tests {
     use hyperactor::Label;
     use hyperactor::PortAddr;
     use hyperactor::ProcAddr;
+    use hyperactor::RemoteMessage;
     use hyperactor::accum::IdleFlushReducerOpts;
     use hyperactor::channel::ChannelTransport;
     use hyperactor::proc::Proc;
@@ -3105,6 +3233,252 @@ mod tests {
         );
     }
 
+    /// Two CastActors, each relaying a proc with two receivers, in a cast
+    /// domain of shape `hosts = 2, actors = 2`.
+    struct ControlCastFixture {
+        _procs: Vec<Proc>,
+        client: Client,
+        receivers: Vec<hyperactor::ActorHandle<SplitPortReceiver>>,
+        domain: CastDomainRef,
+    }
+
+    impl ControlCastFixture {
+        fn new() -> Self {
+            let client_proc =
+                Proc::direct(ChannelTransport::Unix.any(), "client_proc".into()).unwrap();
+            let client = client_proc.client("client");
+            let mut procs = vec![client_proc];
+            let mut nodes = Vec::new();
+            let mut receivers = Vec::new();
+            let mut members = Vec::new();
+            for host_rank in 0..2 {
+                let host = Proc::direct(ChannelTransport::Unix.any(), format!("host_{host_rank}"))
+                    .unwrap();
+                let cast_actor: ActorRef<CastActor> = host
+                    .spawn_with_uid(
+                        Uid::singleton(Label::strip(CAST_ACTOR_NAME)),
+                        CastActor::default(),
+                    )
+                    .unwrap()
+                    .bind();
+                let worker = Proc::direct(
+                    ChannelTransport::Unix.any(),
+                    format!("host_{host_rank}_proc_0"),
+                )
+                .unwrap();
+                for actor_rank in 0..2 {
+                    let receiver = worker
+                        .spawn_with_uid(
+                            Uid::singleton(Label::strip(&format!("receiver_{actor_rank}"))),
+                            SplitPortReceiver,
+                        )
+                        .unwrap();
+                    members.push(receiver.actor_addr().clone());
+                    receivers.push(receiver);
+                }
+                nodes.push(cast_actor);
+                procs.extend([host, worker]);
+            }
+            let destinations =
+                CastDestination::mesh(Region::from(shape!(hosts = 2, actors = 2)), members)
+                    .unwrap();
+            let destinations = destinations.values().collect::<Vec<_>>();
+            let nodes = nodes
+                .into_iter()
+                .zip(destinations.chunks(2))
+                .map(|(cast_actor, local)| Some(CastNode::new(cast_actor, local.to_vec())))
+                .collect();
+            let domain = CastDomainId::new()
+                .materialize(
+                    &client,
+                    Arc::new(ValueMesh::new(Region::from(shape!(cast_actor = 2)), nodes).unwrap()),
+                    TilingPolicy::BlockPartitioning,
+                    Flattrs::new(),
+                )
+                .unwrap();
+            Self {
+                _procs: procs,
+                client,
+                receivers,
+                domain,
+            }
+        }
+
+        fn cast_control<M: Serialize + Named>(&self, port: ControlPort, message: M) {
+            self.domain
+                .cast_control(&self.client, Flattrs::new(), port, message)
+                .unwrap();
+        }
+
+        async fn stop_receiver(&self, rank: usize) {
+            let receiver = &self.receivers[rank];
+            receiver.drain_and_stop("done").unwrap();
+            receiver
+                .status()
+                .wait_for(hyperactor::actor::ActorStatus::is_terminal)
+                .await
+                .unwrap();
+        }
+
+        /// A one-shot reply capability over a port that accepts a reply from
+        /// every destination.
+        fn open_replies<M: RemoteMessage>(
+            &self,
+        ) -> (
+            hyperactor::OncePortRef<M>,
+            hyperactor::mailbox::PortReceiver<M>,
+        ) {
+            let (port, replies) = context::Mailbox::mailbox(&self.client).open_port::<M>();
+            (
+                hyperactor::OncePortRef::attest_reducible(port.bind().into_port_addr(), None),
+                replies,
+            )
+        }
+    }
+
+    async fn recv_each<M: RemoteMessage>(
+        receiver: &mut hyperactor::mailbox::PortReceiver<M>,
+        count: usize,
+    ) -> Vec<M> {
+        let mut messages = Vec::new();
+        for _ in 0..count {
+            messages.push(
+                tokio::time::timeout(Duration::from_secs(5), receiver.recv())
+                    .await
+                    .expect("every destination should reply")
+                    .unwrap(),
+            );
+        }
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+                .await
+                .is_err(),
+            "each destination replies once"
+        );
+        messages
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_control_cast_subscribes_every_actor_terminal() {
+        let fixture = ControlCastFixture::new();
+        let (subscriber, mut notifications) = context::Mailbox::mailbox(&fixture.client)
+            .open_port::<Option<hyperactor::actor::ActorStatus>>();
+        let subscriber = subscriber.bind();
+        let recording = record_split_port_tree(subscriber.port_addr().clone());
+        fixture.cast_control(
+            ControlPort::Status,
+            hyperactor::StatusMessage::SubscribeTerminal {
+                subscription_id: Uuid::new_v4(),
+                subscriber,
+            },
+        );
+        // A subscription that arrives after its receiver stopped is answered
+        // at once from the tombstone, so the stops need not wait for it.
+        for rank in 0..fixture.receivers.len() {
+            fixture.stop_receiver(rank).await;
+        }
+        for status in recv_each(&mut notifications, fixture.receivers.len()).await {
+            assert!(matches!(
+                status,
+                Some(hyperactor::actor::ActorStatus::Stopped(_))
+            ));
+        }
+        assert!(
+            recording.edges().is_empty(),
+            "control cast replies are not split"
+        );
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_control_cast_unsubscribes_every_actor_terminal() {
+        let fixture = ControlCastFixture::new();
+        let (subscriber, mut notifications) = context::Mailbox::mailbox(&fixture.client)
+            .open_port::<Option<hyperactor::actor::ActorStatus>>();
+        let subscription_id = Uuid::new_v4();
+        fixture.cast_control(
+            ControlPort::Status,
+            hyperactor::StatusMessage::SubscribeTerminal {
+                subscription_id,
+                subscriber: subscriber.bind(),
+            },
+        );
+        fixture.cast_control(
+            ControlPort::Status,
+            hyperactor::StatusMessage::UnsubscribeTerminal { subscription_id },
+        );
+        // A subscription that reaches a stopped actor before its cancellation
+        // is answered at once, so stop the actors only after each has answered
+        // a later status request along the same route.
+        let (probe, mut statuses) =
+            fixture.open_replies::<Option<hyperactor::actor::ActorStatus>>();
+        fixture.cast_control(
+            ControlPort::Status,
+            hyperactor::StatusMessage::GetStatus {
+                reply: probe,
+                delivery: None,
+            },
+        );
+        recv_each(&mut statuses, fixture.receivers.len()).await;
+        for rank in 0..fixture.receivers.len() {
+            fixture.stop_receiver(rank).await;
+        }
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), notifications.recv())
+                .await
+                .is_err(),
+            "a cancelled subscription is never notified"
+        );
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_control_cast_gets_every_actor_status() {
+        let fixture = ControlCastFixture::new();
+        fixture.stop_receiver(1).await;
+        let (reply, mut statuses) =
+            fixture.open_replies::<Option<hyperactor::actor::ActorStatus>>();
+        fixture.cast_control(
+            ControlPort::Status,
+            hyperactor::StatusMessage::GetStatus {
+                reply,
+                delivery: None,
+            },
+        );
+        let statuses = recv_each(&mut statuses, fixture.receivers.len()).await;
+        let terminal = statuses
+            .iter()
+            .map(|status| status.as_ref().expect("every receiver is known"))
+            .filter(|status| status.is_terminal())
+            .count();
+        assert_eq!(terminal, 1, "statuses: {statuses:?}");
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_control_cast_introspects_every_actor() {
+        let fixture = ControlCastFixture::new();
+        let (reply, mut results) =
+            fixture.open_replies::<hyperactor::introspect::IntrospectResult>();
+        fixture.cast_control(
+            ControlPort::Introspect,
+            hyperactor::introspect::IntrospectMessage::Query {
+                view: hyperactor::introspect::IntrospectView::Actor,
+                reply,
+            },
+        );
+        let identities = recv_each(&mut results, fixture.receivers.len())
+            .await
+            .into_iter()
+            .map(|result| result.identity)
+            .collect::<HashSet<_>>();
+        let expected = fixture
+            .receivers
+            .iter()
+            .map(|receiver| {
+                hyperactor::introspect::IntrospectRef::Actor(receiver.actor_addr().clone())
+            })
+            .collect::<HashSet<_>>();
+        assert_eq!(identities, expected);
+    }
+
     // CA-5 (route independence).
     #[async_timed_test(timeout_secs = 30)]
     async fn test_cast_preserves_supplied_operation_context_headers() {
@@ -3338,11 +3712,13 @@ mod tests {
             CastMessage {
                 cast_domain_id: domain_id,
                 sender: probe_ref.actor_addr().clone(),
-                session_id: client.sequencer().session_id(),
-                seqs: ValueMesh::new(empty_sequence_region, Vec::new()).unwrap(),
+                target: CastTarget::Handler {
+                    port: TestDelivery::port(),
+                    session_id: client.sequencer().session_id(),
+                    seqs: ValueMesh::new(empty_sequence_region, Vec::new()).unwrap(),
+                },
                 lineage: Vec::new(),
                 headers: Flattrs::new(),
-                dest_port: TestDelivery::port(),
                 data: wirevalue::Any::<wirevalue::encoding::Multipart>::serialize(&TestDelivery {
                     payload: "malformed".to_string(),
                 })
