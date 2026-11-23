@@ -72,7 +72,7 @@ zbus = { version = "5.19.0", features = ["async-executor", "async-fs", "async-io
 buck-resources = "1"
 clap = { version = "4.6.2", features = ["derive", "env", "string", "unicode", "wrap_help"] }
 criterion = { version = "0.8.2", features = ["async_tokio", "csv_output"] }
-jsonschema = "0.61.2"
+jsonschema = "0.62.0"
 timed_test = { version = "0.0.0", path = "../timed_test" }
 tracing-test = { version = "0.2.6", features = ["no-env-filter"] }
 
