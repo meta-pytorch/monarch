@@ -46,6 +46,9 @@ def configure(
     tail_log_lines: int = ...,
     codec_max_frame_length: int = ...,
     message_delivery_timeout: str = ...,
+    actor_monitor_request_timeout: str = ...,
+    actor_monitor_poll_interval: str = ...,
+    actor_monitor_delivery_timeout: str = ...,
     host_spawn_ready_timeout: str = ...,
     mesh_proc_spawn_max_idle: str = ...,
     process_exit_timeout: str = ...,
@@ -121,6 +124,13 @@ def configure(
         codec_max_frame_length: Maximum frame length for codec (bytes)
         message_delivery_timeout: Timeout for message delivery
             (humantime)
+        actor_monitor_request_timeout: Maximum wait for an actor monitor's
+            status or delivery-progress reply (humantime, default 20s)
+        actor_monitor_poll_interval: Interval between an actor monitor's
+            status polls (humantime, default 1s)
+        actor_monitor_delivery_timeout: How long an actor monitor waits
+            for delivery progress before reporting a stall (humantime,
+            default 30s)
         host_spawn_ready_timeout: Timeout for host spawn readiness
             (humantime)
         mesh_proc_spawn_max_idle: Maximum idle time for spawning procs

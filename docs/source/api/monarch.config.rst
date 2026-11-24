@@ -191,7 +191,7 @@ Timeouts
     Maximum idle time for actor state queries.
 
     - **Type**: ``str`` (duration format)
-    - **Default**: ``"1m"``
+    - **Default**: ``"30s"``
     - **Environment**: ``HYPERACTOR_MESH_GET_ACTOR_STATE_MAX_IDLE``
 
 ``supervision_watchdog_timeout``
@@ -212,6 +212,61 @@ Timeouts
     but healthy controller as failed. Increase this value in
     environments with long startup times or extended periods of
     inactivity (e.g., opt mode with PAR extraction).
+
+``actor_monitor_request_timeout``
+    Maximum wait for an actor monitor's status or delivery-progress reply.
+
+    - **Type**: ``str`` (duration format)
+    - **Default**: ``"20s"``
+    - **Environment**: ``HYPERACTOR_ACTOR_MONITOR_REQUEST_TIMEOUT``
+
+    Read when the monitor is spawned. A timeout fails the observer with
+    ``StatusRequestTimedOut``; it does not stop the monitored actor unless
+    the monitor is used as a supervisor. For data meshes, keep this plus
+    the initial polling delay (2s) and worker keepalive interval (5s)
+    below ``data_supervision_timeout``.
+
+``actor_monitor_poll_interval``
+    Interval between an actor monitor's status polls.
+
+    - **Type**: ``str`` (duration format)
+    - **Default**: ``"1s"``
+    - **Environment**: ``HYPERACTOR_ACTOR_MONITOR_POLL_INTERVAL``
+
+    Read when the monitor is spawned. Larger values poll less frequently,
+    reducing load at the cost of slower failure detection.
+
+``actor_monitor_delivery_timeout``
+    How long an actor monitor waits for delivery progress before reporting
+    ``DeliveryProgressStalled``.
+
+    - **Type**: ``str`` (duration format)
+    - **Default**: ``"30s"``
+    - **Environment**: ``HYPERACTOR_ACTOR_MONITOR_DELIVERY_TIMEOUT``
+
+    Read when the monitor is spawned via ``ActorRef::monitor()`` or an
+    endpoint ``monitor()``. The status replies still arrive; the failure
+    means the actor made no mailbox dequeue progress while behind, so it
+    requires messages in flight to trigger.
+
+``data_supervision_timeout``
+    Maximum gap between data worker keepalives before the owner permanently
+    fails the worker.
+
+    - **Type**: ``str`` (duration format)
+    - **Default**: ``"30s"``
+    - **Environment**: ``HYPERACTOR_MESH_DATA_SUPERVISION_TIMEOUT``
+
+    Workers send keepalives every 5s. Independent of
+    ``mesh_orphan_timeout``, which should be at least as long.
+
+``mesh_orphan_timeout``
+    Maximum gap between owner keepalives before a worker stops its
+    orphaned actors.
+
+    - **Type**: ``str`` (duration format)
+    - **Default**: ``"60s"``
+    - **Environment**: ``HYPERACTOR_MESH_ORPHAN_TIMEOUT``
 
 ``proc_stop_max_idle``
     Maximum idle time between updates while stopping procs.

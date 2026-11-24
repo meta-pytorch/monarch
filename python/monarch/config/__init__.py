@@ -48,6 +48,8 @@ if TYPE_CHECKING:
             codec_max_frame_length: NotRequired[int]
             message_delivery_timeout: NotRequired[str]
             actor_monitor_request_timeout: NotRequired[str]
+            actor_monitor_poll_interval: NotRequired[str]
+            actor_monitor_delivery_timeout: NotRequired[str]
             host_spawn_ready_timeout: NotRequired[str]
             mesh_proc_spawn_max_idle: NotRequired[str]
             process_exit_timeout: NotRequired[str]
@@ -136,6 +138,12 @@ def configure(**kwargs: "ConfigureKwargsType") -> None:
                 that observer retains the failure. For data meshes, keep this plus the
                 initial polling delay (2s) and worker keepalive interval (5s) below
                 data_supervision_timeout, with room for message delivery and scheduling.
+            actor_monitor_poll_interval: Interval between an actor monitor's status
+                polls (humantime, default 1s), read when the monitor is spawned.
+                Larger values poll less frequently.
+            actor_monitor_delivery_timeout: How long an actor monitor waits for
+                delivery progress before reporting a stall (humantime, default 30s),
+                read when the monitor is spawned.
             process_exit_timeout: Timeout for process exit (humantime).
             message_ack_time_interval: Time interval for message acknowledgments (humantime).
             message_ack_every_n_messages: Acknowledge every N messages.

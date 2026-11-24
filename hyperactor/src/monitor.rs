@@ -41,6 +41,8 @@ use crate::RemoteMessage;
 use crate::StatusMessage;
 use crate::actor::ActorStatus;
 use crate::actor::Referable;
+use crate::config::ACTOR_MONITOR_DELIVERY_TIMEOUT;
+use crate::config::ACTOR_MONITOR_POLL_INTERVAL;
 use crate::config::ACTOR_MONITOR_REQUEST_TIMEOUT;
 use crate::context;
 use crate::mailbox::MailboxError;
@@ -52,8 +54,6 @@ use crate::proc::DeliveryProgressResponse;
 use crate::supervision::local_fence;
 
 const DEFAULT_INITIAL_DELAY: Duration = Duration::from_secs(2);
-const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(1);
-const DEFAULT_DELIVERY_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The current state of an actor monitor.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Named)]
@@ -294,7 +294,7 @@ pub trait MonitorableEndpoint {
                 context::Mailbox::mailbox(cx).actor_addr().clone(),
                 cx.instance().sequencer().clone(),
                 EndpointId::for_location(&location),
-                DEFAULT_DELIVERY_TIMEOUT,
+                hyperactor_config::global::get(ACTOR_MONITOR_DELIVERY_TIMEOUT),
             ),
         )
     }
@@ -385,7 +385,7 @@ impl ActorMonitor {
             cx,
             target,
             DEFAULT_INITIAL_DELAY,
-            DEFAULT_POLL_INTERVAL,
+            hyperactor_config::global::get(ACTOR_MONITOR_POLL_INTERVAL),
             hyperactor_config::global::get(ACTOR_MONITOR_REQUEST_TIMEOUT),
             None,
             true,
@@ -407,7 +407,7 @@ impl ActorMonitor {
             cx,
             target,
             DEFAULT_INITIAL_DELAY,
-            DEFAULT_POLL_INTERVAL,
+            hyperactor_config::global::get(ACTOR_MONITOR_POLL_INTERVAL),
             hyperactor_config::global::get(ACTOR_MONITOR_REQUEST_TIMEOUT),
             None,
             false,
@@ -422,7 +422,7 @@ impl ActorMonitor {
             cx,
             target,
             DEFAULT_INITIAL_DELAY,
-            DEFAULT_POLL_INTERVAL,
+            hyperactor_config::global::get(ACTOR_MONITOR_POLL_INTERVAL),
             hyperactor_config::global::get(ACTOR_MONITOR_REQUEST_TIMEOUT),
             Some(delivery),
             true,
@@ -2061,6 +2061,47 @@ mod tests {
                 }
             );
         }
+    }
+
+    #[tokio::test]
+    async fn test_monitor_uses_configured_poll_interval_and_delivery_timeout() {
+        let config = hyperactor_config::global::lock();
+        let _poll_guard =
+            config.override_key(ACTOR_MONITOR_POLL_INTERVAL, Duration::from_millis(10));
+        let _delivery_guard =
+            config.override_key(ACTOR_MONITOR_DELIVERY_TIMEOUT, Duration::from_millis(50));
+        let _reordering_guard =
+            config.override_key(config::ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
+
+        // Poll interval: a live actor monitored through the public spawns
+        // reports alive.
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let handle = proc.spawn(DeliveryTestActor);
+        let target = handle.actor_addr().clone();
+        let actor_ref: ActorRef<DeliveryTestActor> = handle.bind();
+        let monitor = ActorMonitor::spawn_persistent(&client, target.clone());
+        let _ = wait_for_alive(&monitor).await;
+
+        // Delivery timeout: a stalled actor monitored through
+        // `MonitorableEndpoint::monitor` reports the configured timeout.
+        let _ = client
+            .sequencer()
+            .assign_seq(&target.port_addr(Port::handler::<DeliveryTestMsg>()));
+        let delivery_monitor = actor_ref.monitor(&client);
+        handle.post(&client, DeliveryTestMsg);
+        assert_eq!(
+            time::timeout(Duration::from_secs(5), delivery_monitor.wait_for_failure())
+                .await
+                .expect("monitor should use the configured delivery timeout"),
+            MonitorFailure::DeliveryProgressStalled {
+                actor_id: target,
+                from: context::Mailbox::mailbox(&client).actor_addr().clone(),
+                largest_sent: 2,
+                largest_dequeueable: 0,
+                timeout: Duration::from_millis(50),
+            }
+        );
     }
 
     #[tokio::test]
