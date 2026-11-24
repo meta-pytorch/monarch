@@ -148,6 +148,7 @@ use hyperactor_telemetry::notify_message_status;
 use hyperactor_telemetry::recorder::Recording;
 use serde::Deserialize;
 use serde::Serialize;
+use serde_multipart::Part;
 use tokio::sync::Notify;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
@@ -658,8 +659,28 @@ pub enum StatusMessage {
         /// The id used to subscribe.
         subscription_id: Uuid,
     },
+    /// Like [`StatusMessage::GetStatus`], but the reply also carries `tag`,
+    /// echoed back unchanged. The proc never interprets `tag`, so a caller
+    /// can use it to attribute replies, for example a part that a cast
+    /// rewrites in transit for each destination.
+    GetTaggedStatus {
+        /// Opaque part echoed in the reply.
+        tag: Part,
+        /// Reply port receiving `tag` and the status.
+        reply: crate::OncePortRef<TaggedStatus>,
+    },
 }
 wirevalue::register_type!(StatusMessage);
+
+/// Reply to [`StatusMessage::GetTaggedStatus`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named)]
+pub struct TaggedStatus {
+    /// The request's tag, unchanged.
+    pub tag: Part,
+    /// `None` for an unknown actor and `Some(status)` for a known actor.
+    pub status: Option<ActorStatus>,
+}
+wirevalue::register_type!(TaggedStatus);
 
 const MAX_TERMINAL_STATUS_SUBSCRIBERS: usize = 100;
 
@@ -1052,6 +1073,16 @@ impl Proc {
             }
             StatusMessage::UnsubscribeTerminal { subscription_id } => {
                 self.unsubscribe_terminal_status(actor_id, subscription_id);
+            }
+            StatusMessage::GetTaggedStatus { tag, reply } => {
+                let status = self.status_for_actor(actor_id);
+                if let Err(err) = self.serialize_and_send_once(
+                    reply,
+                    TaggedStatus { tag, status },
+                    crate::mailbox::monitored_return_handle(),
+                ) {
+                    tracing::error!("tagged status reply failed: {err}");
+                }
             }
         }
     }
@@ -6172,6 +6203,54 @@ mod tests {
         let missing = proc.root_addr(Uid::instance(Label::strip("missing")));
 
         assert_eq!(get_status(&client, &missing).await, None);
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_tagged_status_echoes_tag() {
+        let config = hyperactor_config::global::lock();
+        let _config_guard = config.override_key(
+            crate::config::PENDING_ACTOR_DELIVERY_TIMEOUT,
+            Duration::from_millis(100),
+        );
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let handle = proc.spawn(TestActor);
+        handle
+            .status()
+            .wait_for(|status| matches!(status, ActorStatus::Idle))
+            .await
+            .expect("actor should become idle");
+        let missing = proc.root_addr(Uid::instance(Label::strip("missing")));
+
+        let get_tagged_status = |actor_addr: &ActorAddr, tag: &str| {
+            let (reply_port, reply_rx) = client.open_once_port::<TaggedStatus>();
+            actor_addr.status_port().post(
+                &client,
+                StatusMessage::GetTaggedStatus {
+                    tag: Part::serialize(&tag.to_string()).unwrap(),
+                    reply: reply_port.bind(),
+                },
+            );
+            async move {
+                let TaggedStatus { tag, status } =
+                    tokio::time::timeout(Duration::from_secs(5), reply_rx.recv())
+                        .await
+                        .expect("tagged status reply should arrive")
+                        .expect("tagged status reply port should remain open");
+                (tag.deserialized::<String>().unwrap(), status)
+            }
+        };
+
+        assert_eq!(
+            get_tagged_status(handle.actor_addr(), "running").await,
+            ("running".to_string(), Some(ActorStatus::Idle)),
+            "a known actor's reply should echo its tag with its status"
+        );
+        assert_eq!(
+            get_tagged_status(&missing, "missing").await,
+            ("missing".to_string(), None),
+            "an unknown actor's reply should echo its tag with no status"
+        );
     }
 
     #[async_timed_test(timeout_secs = 30)]

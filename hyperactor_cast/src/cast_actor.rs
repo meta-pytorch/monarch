@@ -3479,6 +3479,43 @@ mod tests {
         assert_eq!(identities, expected);
     }
 
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_control_cast_stamps_rank_in_tagged_status() {
+        let fixture = ControlCastFixture::new();
+        fixture.stop_receiver(1).await;
+        let (reply, mut replies) = fixture.open_replies::<hyperactor::TaggedStatus>();
+        fixture.cast_control(
+            ControlPort::Status,
+            hyperactor::StatusMessage::GetTaggedStatus {
+                tag: serde_multipart::Part::serialize(&ResourceRankRepr(None)).unwrap(),
+                reply,
+            },
+        );
+        let statuses = recv_each(&mut replies, fixture.receivers.len())
+            .await
+            .into_iter()
+            .map(|hyperactor::TaggedStatus { tag, status }| {
+                let ResourceRankRepr(rank) = tag.deserialized().unwrap();
+                (
+                    rank.expect("delivery should stamp the destination rank"),
+                    status.expect("every receiver is known"),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(
+            statuses.keys().copied().collect::<Vec<_>>(),
+            vec![0, 1, 2, 3],
+            "each destination's reply should carry its own rank"
+        );
+        for (rank, status) in statuses {
+            assert_eq!(
+                status.is_terminal(),
+                rank == 1,
+                "only the stopped receiver at rank 1 should be terminal, but rank {rank} has status {status}"
+            );
+        }
+    }
+
     // CA-5 (route independence).
     #[async_timed_test(timeout_secs = 30)]
     async fn test_cast_preserves_supplied_operation_context_headers() {

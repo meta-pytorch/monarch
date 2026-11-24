@@ -17,6 +17,7 @@
 //! * [`StatusMessage::GetStatus`] gets the status, and its delivery-progress
 //!   request gets [`DeliveryProgressResponse::ActorGone`], as for a
 //!   terminated actor on a live proc;
+//! * [`StatusMessage::GetTaggedStatus`] gets its tag and the status;
 //! * [`StatusMessage::SubscribeTerminal`] gets the status at once;
 //! * [`StatusMessage::UnsubscribeTerminal`] is dropped;
 //! * any other message is returned undeliverable, with the status as the
@@ -51,6 +52,7 @@ use crate::ordering::SeqInfo;
 use crate::port::ControlPort;
 use crate::proc::DeliveryProgressResponse;
 use crate::proc::StatusMessage;
+use crate::proc::TaggedStatus;
 
 impl PeerAttachGuard {
     /// Replace this peer's route with a dead-proc route, which answers for
@@ -129,6 +131,18 @@ impl DeadProc {
                 self.gateway.post(envelope, monitored_return_handle());
             }
             StatusMessage::UnsubscribeTerminal { .. } => {}
+            StatusMessage::GetTaggedStatus { tag, reply } => {
+                if let Err(err) = self.gateway.serialize_and_send_once(
+                    reply,
+                    TaggedStatus {
+                        tag,
+                        status: Some(self.status.clone()),
+                    },
+                    monitored_return_handle(),
+                ) {
+                    tracing::error!("dead-proc tagged status reply failed: {err}");
+                }
+            }
         }
     }
 }
@@ -162,6 +176,7 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
+    use serde_multipart::Part;
     use timed_test::async_timed_test;
     use tokio::sync::mpsc;
     use tokio::time;
@@ -350,6 +365,31 @@ mod tests {
             .try_recv()
             .expect("live peer should receive its query");
         assert_eq!(forwarded.dest(), &live.status_port().into_port_addr());
+    }
+
+    /// A tagged status query to an actor behind a dead peer is answered with
+    /// its tag and the recorded status.
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_dead_proc_answers_tagged_status() {
+        let (gateway, _proc, client) = gateway_with_client();
+        let (uid, guard, _rx) = attach_recording_peer(&gateway);
+        guard.mark_dead(killed());
+        let actor = actor_behind(&gateway, &uid, "actor");
+
+        let (reply, reply_rx) = client.open_once_port::<TaggedStatus>();
+        actor.status_port().post(
+            &client,
+            StatusMessage::GetTaggedStatus {
+                tag: Part::serialize(&"tag".to_string()).unwrap(),
+                reply: reply.bind(),
+            },
+        );
+        let TaggedStatus { tag, status } = time::timeout(Duration::from_secs(5), reply_rx.recv())
+            .await
+            .expect("tagged status reply should arrive")
+            .unwrap();
+        assert_eq!(tag.deserialized::<String>().unwrap(), "tag");
+        assert_eq!(status, Some(killed()));
     }
 
     /// A terminal-status subscription to an actor behind a dead peer is
