@@ -218,6 +218,10 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
         module,
         "monarch_hyperactor.host_mesh",
     )?)?;
+    monarch_hyperactor::http::register_python_bindings(&get_or_add_new_module(
+        module,
+        "monarch_hyperactor.http",
+    )?)?;
 
     monarch_hyperactor::runtime::register_python_bindings(&get_or_add_new_module(
         module,

@@ -8,12 +8,15 @@
 
 from typing import Any, Generic, Protocol, TypeVar
 
+from monarch._rust_bindings.monarch_hyperactor.pywaker import Event
+
 T = TypeVar("T", covariant=True)
 U = TypeVar("U")
 
 class Receiver(Protocol[T]):
     def try_recv(self) -> T | None: ...
     async def recv(self) -> T: ...
+    def _event(self) -> Event: ...
 
 class PyTestSender(Generic[U]):
     def send(self, value: U) -> None: ...
