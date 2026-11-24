@@ -80,3 +80,8 @@ does not recursively flush peer gateways.
 - [Host](host.md)
 - [Proc](proc.md)
 - [Routers](../mailboxes/routers.md)
+
+## Attachment delivery guarantees
+
+See [Gateway attachment and outbound delivery](gateway_connection.md) for the
+route cutover contract, cancellation behavior, and regression scenarios.

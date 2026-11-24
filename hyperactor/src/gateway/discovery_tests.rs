@@ -208,6 +208,23 @@ async fn stable_leaf_and_nested_leaf_restart_rediscovery_and_stale_delivery() {
         old_ref.post(&client, PingPongMessage(0, old_ref.clone(), done.bind()));
         assert!(receiver.recv().await.unwrap());
 
+        // The actor reply precedes the transport's batched acknowledgment.
+        // Settle the completed exchange before deliberately closing its slot:
+        // unacknowledged traffic now correctly reports failure on session exit.
+        caller.flush().await.unwrap();
+        leaf.flush().await.unwrap();
+        let parent = if nested { &rack } else { &core };
+        let old_sender = parent
+            .inner
+            .peers
+            .read()
+            .unwrap()
+            .get(&key)
+            .unwrap()
+            .sender
+            .clone();
+        old_sender.flush().await.unwrap();
+
         // Keep the old process and session alive while replacing the stable
         // slot, so discovery must not resolve the old incarnation.
         let replacement_gateway = Gateway::isolated();
@@ -263,6 +280,23 @@ async fn stable_leaf_and_nested_leaf_restart_rediscovery_and_stale_delivery() {
                 .id(),
             replacement.proc_id()
         );
+        // All actor exchanges are complete; also settle their wire outcomes
+        // before tearing down every session in the fixture. These peers are
+        // transport senders, so flushing them cannot recurse into a gateway.
+        for gateway in [&caller, &rack, &core, &replacement_gateway] {
+            gateway.flush().await.unwrap();
+            let senders: Vec<_> = gateway
+                .inner
+                .peers
+                .read()
+                .unwrap()
+                .values()
+                .map(|peer| peer.sender.clone())
+                .collect();
+            for sender in senders {
+                sender.flush().await.unwrap();
+            }
+        }
         old_actor.stop("test complete").unwrap();
         new_actor.stop("test complete").unwrap();
         sender.stop("test complete").unwrap();
