@@ -183,6 +183,9 @@ declare_attrs! {
     /// against leaked children; tests usually disable it via
     /// `std::env::set_var("HYPERACTOR_MESH_BOOTSTRAP_ENABLE_PDEATHSIG",
     /// "false")`.
+    ///
+    /// Use the normal shutdown protocol to stop and clean up processes.
+    /// Arming the parent-death signal is best effort and can be disabled.
     @meta(CONFIG = ConfigAttr::new(
         Some("HYPERACTOR_MESH_BOOTSTRAP_ENABLE_PDEATHSIG".to_string()),
         Some("mesh_bootstrap_enable_pdeathsig".to_string()),
@@ -605,9 +608,8 @@ impl Bootstrap {
                 }
 
                 if hyperactor_config::global::get(MESH_BOOTSTRAP_ENABLE_PDEATHSIG) {
-                    // Safety net when the hosting process dies before it can
-                    // run the normal shutdown protocol. The macOS watcher must
-                    // start after exec, not in a pre_exec callback.
+                    // An extra safeguard alongside normal shutdown. Start
+                    // the macOS watcher after exec, outside pre_exec.
                     #[cfg(target_os = "macos")]
                     install_parent_exit_watch().context("installing parent exit watcher")?;
                     #[cfg(not(target_os = "macos"))]

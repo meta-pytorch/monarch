@@ -156,6 +156,7 @@ def configure(**kwargs: "ConfigureKwargsType") -> None:
 
         Mesh bootstrap configuration:
             mesh_bootstrap_enable_pdeathsig: Enable parent-death signal for spawned processes.
+                An extra safeguard. Use normal shutdown to stop and clean up processes.
             mesh_terminate_concurrency: Maximum concurrent terminations during shutdown.
             mesh_terminate_timeout: Timeout per child during graceful termination (humantime).
 

@@ -404,8 +404,11 @@ Mesh Bootstrap
     - **Default**: ``True``
     - **Environment**: ``HYPERACTOR_MESH_BOOTSTRAP_ENABLE_PDEATHSIG``
 
-    When ``True``, child processes receive SIGTERM if their parent dies,
-    preventing orphaned processes.
+    When ``True``, a spawned process tries to set up a way to stop if its
+    parent dies. On Linux it asks the kernel to send ``SIGKILL``. On macOS a
+    watcher exits the process when the parent goes away. This is an extra
+    safeguard. Use the normal shutdown protocol to stop and clean up processes.
+    Tests usually disable this setting.
 
 ``mesh_terminate_concurrency``
     Maximum concurrent terminations during mesh shutdown.

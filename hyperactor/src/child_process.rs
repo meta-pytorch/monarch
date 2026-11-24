@@ -15,6 +15,9 @@
 //! the death signal must be forked here instead, by one thread that never
 //! exits, so the signal fires only when the parent process does.
 //!
+//! The parent-death signal is an extra safeguard. Use the normal shutdown
+//! protocol to stop and clean up children.
+//!
 //! # Invariants
 //!
 //! - **CPS-1 (spawner-outlives-children):** every child returned by
