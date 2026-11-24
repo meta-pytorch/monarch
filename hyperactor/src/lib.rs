@@ -201,6 +201,7 @@ pub use proc::Instance;
 pub use proc::InstanceCell;
 pub use proc::Proc;
 pub use proc::StatusMessage;
+pub use proc::TaggedStatus;
 pub use proc::WeakProc;
 pub use ref_::ActorRef;
 pub use ref_::IdleFlushPortRef;
