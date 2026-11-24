@@ -136,6 +136,63 @@ In order to spawn an actor mesh, you need to have this handler implemented on
 the context you pass in to ProcMesh::spawn. Else, there will be a type error.
 
 
+## Supervision and Monitoring Timeouts
+
+Two mechanisms watch for dead or stuck resources, and each has its own
+timeouts. *Supervision* is the controller-driven mechanism for managed
+meshes: `ActorMeshController` and `ProcMeshController` poll `ProcAgent`
+and `HostAgent` state and stream `MeshFailure` events to owners and
+subscribers. *Monitoring* is the direct mechanism: an `ActorMonitor` (or a
+`MeshMonitor` over a `DataActorMesh`) polls one actor's status itself, with
+no controller in between. Monitoring is not supervision, but its failures
+surface as the same `MeshFailure` values, so the timeouts are documented
+together here. All values below are read when the watcher is spawned;
+change them with `monarch.config.configure(...)` or the listed environment
+variable before spawning the mesh or monitor. The one exception is
+`supervision_poll_frequency`, which has no Python key and is set only via
+its environment variable.
+
+### Controller supervision (managed meshes)
+
+| Key | Env var | Default | Triggers when |
+| --- | --- | --- | --- |
+| `supervision_poll_frequency` | `HYPERACTOR_MESH_SUPERVISION_POLL_FREQUENCY` | 10s | Interval between controller polls of actor/proc state; also the heartbeat cadence to subscribers when nothing changed. |
+| `get_actor_state_max_idle` | `HYPERACTOR_MESH_GET_ACTOR_STATE_MAX_IDLE` | 30s | No `GetState` reply progress from a `ProcAgent` for this long; the rank is reported failed. |
+| `get_proc_state_max_idle` | `HYPERACTOR_MESH_GET_PROC_STATE_MAX_IDLE` | 1m | No `GetState` reply progress from a `HostAgent` for this long; the proc is reported as `host unreachable`. |
+| `supervision_watchdog_timeout` | `HYPERACTOR_MESH_SUPERVISION_WATCHDOG_TIMEOUT` | 2m | No supervision message (healthy or unhealthy) observed for this long; the controller is assumed unreachable and the mesh is treated as unhealthy. Must exceed poll frequency + `get_actor_state_max_idle` + `get_proc_state_max_idle`. |
+
+### Data mesh keepalives
+
+| Key | Env var | Default | Triggers when |
+| --- | --- | --- | --- |
+| `data_supervision_timeout` | `HYPERACTOR_MESH_DATA_SUPERVISION_TIMEOUT` | 30s | Owner sees no worker keepalive (sent every 5s) for this long and permanently fails the worker. |
+| `mesh_orphan_timeout` | `HYPERACTOR_MESH_ORPHAN_TIMEOUT` | 60s | Worker sees no owner keepalive for this long and stops its orphaned actors. Set to at least `data_supervision_timeout` so a worker tolerates a frozen owner as long as the owner tolerates a frozen worker. |
+
+### Actor monitoring (direct, including `DataActorMesh`)
+
+| Key | Env var | Default | Triggers when |
+| --- | --- | --- | --- |
+| `actor_monitor_poll_interval` | `HYPERACTOR_ACTOR_MONITOR_POLL_INTERVAL` | 1s | Interval between an `ActorMonitor`'s status polls. Larger values poll less frequently and delay failure detection. |
+| `actor_monitor_request_timeout` | `HYPERACTOR_ACTOR_MONITOR_REQUEST_TIMEOUT` | 20s | A status or delivery-progress request gets no reply in time (`StatusRequestTimedOut`). Keep this plus the 2s initial delay and 5s keepalive interval below `data_supervision_timeout`. |
+| `actor_monitor_delivery_timeout` | `HYPERACTOR_ACTOR_MONITOR_DELIVERY_TIMEOUT` | 30s | Replies arrive but the actor makes no mailbox dequeue progress while behind (`DeliveryProgressStalled`). Only applies to delivery monitors from `ActorRef::monitor()` / endpoint `monitor()`; needs messages in flight to trigger. |
+
+For example, a proc that freezes its whole host for over 60 seconds trips
+the 20s request timeout and the 30s supervision timeout at their defaults.
+To ride out such freezes, raise the monitor and keepalive timeouts
+together, preserving the ordering above:
+
+```py
+from monarch.config import configure
+
+configure(
+    actor_monitor_poll_interval="10s",
+    actor_monitor_request_timeout="90s",
+    actor_monitor_delivery_timeout="120s",
+    data_supervision_timeout="150s",
+    mesh_orphan_timeout="150s",
+)
+```
+
 ## Actor Lifecycle
 Actors transition once and only once from running to either stopped or died.
 An actor is considered to have died if:

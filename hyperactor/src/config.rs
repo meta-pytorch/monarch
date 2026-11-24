@@ -128,6 +128,26 @@ declare_attrs! {
     ))
     pub attr ACTOR_MONITOR_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 
+    /// Interval between an actor monitor's status polls. Read when the
+    /// monitor is spawned. Larger values poll less frequently, reducing
+    /// load and spurious timeouts on hosts that freeze briefly, at the
+    /// cost of slower failure detection.
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_ACTOR_MONITOR_POLL_INTERVAL".to_string()),
+        Some("actor_monitor_poll_interval".to_string()),
+    ))
+    pub attr ACTOR_MONITOR_POLL_INTERVAL: Duration = Duration::from_secs(1);
+
+    /// How long an actor monitor waits for delivery progress before
+    /// reporting `DeliveryProgressStalled`. Read when the monitor is
+    /// spawned via `MonitorableEndpoint::monitor`. Larger values tolerate
+    /// longer host freezes before declaring the actor stalled.
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_ACTOR_MONITOR_DELIVERY_TIMEOUT".to_string()),
+        Some("actor_monitor_delivery_timeout".to_string()),
+    ))
+    pub attr ACTOR_MONITOR_DELIVERY_TIMEOUT: Duration = Duration::from_secs(30);
+
     /// How long a proc buffers messages for an actor that has not yet
     /// bound its mailbox before returning them as undeliverable. Zero
     /// returns them immediately.
