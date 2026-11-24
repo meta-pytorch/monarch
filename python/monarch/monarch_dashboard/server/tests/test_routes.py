@@ -11,6 +11,8 @@ JSON structure, filtering, and 404 behaviour.
 """
 
 import json
+import os
+import tempfile
 import unittest
 from typing import Any
 from unittest.mock import patch
@@ -457,6 +459,43 @@ class QueryRouteTest(_RouteTestBase):
     def test_query_invalid_sql(self):
         resp = self.client.post("/api/query", json={"sql": "NOT VALID SQL"})
         self.assertEqual(resp.status_code, 400)
+
+    def _assert_rejected(self, sql: str) -> None:
+        resp = self.client.post("/api/query", json={"sql": sql})
+        self.assertEqual(resp.status_code, 400, resp.get_json())
+        self.assertIn("error", resp.get_json())
+
+    def test_query_cannot_read_host_files(self):
+        with tempfile.NamedTemporaryFile("w", suffix=".csv") as f:
+            f.write("host-secret\n")
+            f.flush()
+            self._assert_rejected(
+                "CREATE EXTERNAL TABLE leaked STORED AS CSV "
+                f"LOCATION '{f.name}' OPTIONS ('format.has_header' 'false')"
+            )
+            self._assert_rejected(f"SELECT * FROM '{f.name}'")
+        self._assert_rejected("SELECT * FROM leaked")
+
+    def test_query_cannot_write_host_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = os.path.join(tmp, "out.csv")
+            self._assert_rejected(f"COPY (SELECT 1) TO '{target}' STORED AS CSV")
+            self.assertFalse(os.path.exists(target))
+
+    def test_query_cannot_change_tables_or_settings(self):
+        for sql in [
+            "INSERT INTO meshes SELECT * FROM meshes",
+            "DROP TABLE meshes",
+            "CREATE VIEW v AS SELECT 1",
+            "SET datafusion.execution.batch_size = 1",
+        ]:
+            with self.subTest(sql=sql):
+                self._assert_rejected(sql)
+        resp = self.client.post(
+            "/api/query", json={"sql": "SELECT count(*) AS n FROM meshes"}
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertGreater(resp.get_json()["rows"][0]["n"], 0)
 
 
 # ---------------------------------------------------------------------------

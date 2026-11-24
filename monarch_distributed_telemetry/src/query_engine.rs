@@ -74,6 +74,7 @@ use tokio::sync::mpsc;
 use crate::QueryResponse;
 use crate::pushdown::CollectorTables;
 use crate::pushdown::PushDownCollectorAggregates;
+use crate::read_only_sql_options;
 
 declare_attrs! {
     /// Run the collector-local part of each telemetry aggregate on the
@@ -785,6 +786,14 @@ impl QueryEngine {
         Ok(())
     }
 
+    /// Remove a local table, if registered.
+    fn deregister_local_table(&self, name: String) -> PyResult<()> {
+        self.session
+            .deregister_table(&name)
+            .map_err(|e| PyException::new_err(e.to_string()))?;
+        Ok(())
+    }
+
     /// Create a new QueryEngine.
     ///
     /// Args:
@@ -806,8 +815,9 @@ impl QueryEngine {
         "<QueryEngine>".into()
     }
 
-    /// Execute SQL and return an Arrow reader that produces batches on demand.
-    /// Dropping the reader cancels the remaining query work.
+    /// Execute a SQL query and return an Arrow reader that produces batches on
+    /// demand. Dropping the reader cancels the remaining query work. DDL, DML,
+    /// and statements are rejected.
     fn query(
         &self,
         py: Python<'_>,
@@ -817,7 +827,9 @@ impl QueryEngine {
         let (schema, mut stream) = py
             .detach(|| -> DFResult<(SchemaRef, SendableRecordBatchStream)> {
                 get_tokio_runtime().block_on(async {
-                    let df = session_ctx.sql(&sql).await?;
+                    let df = session_ctx
+                        .sql_with_options(&sql, read_only_sql_options())
+                        .await?;
                     let schema = Arc::clone(df.schema().inner());
                     let stream = df.execute_stream().await?;
                     Ok((schema, stream))

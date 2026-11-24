@@ -17,7 +17,13 @@ class QueryEngine:
     def register_local_table(self, name: str, arrow_ipc_bytes: bytes) -> None:
         """Register or replace a local table from an Arrow IPC stream."""
         ...
+    def deregister_local_table(self, name: str) -> None:
+        """Remove a local table, if registered."""
+        ...
     def __repr__(self) -> str: ...
     def query(self, sql: str) -> pa.RecordBatchReader:
-        """Execute a SQL query and return an Arrow record batch reader."""
+        """Execute a SQL query and return an Arrow record batch reader.
+
+        DDL, DML, and statements are rejected.
+        """
         ...

@@ -27,6 +27,7 @@ pub use database_scanner::DatabaseScanner;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::ipc::writer::StreamWriter;
 use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::prelude::SQLOptions;
 use hyperactor::ActorAddr;
 use hyperactor::Endpoint as _;
 use hyperactor::PortRef;
@@ -96,6 +97,19 @@ pub enum QueryResponse {
     /// once by the query root. The query ends when each of them has
     /// delivered its count.
     Counts(Vec<(ActorAddr, usize)>),
+}
+
+/// Options for planning caller SQL: queries only.
+///
+/// DDL, DML, and statements are rejected during planning, before they take
+/// effect. Otherwise a caller could `CREATE EXTERNAL TABLE` over any host
+/// path and select it back, `COPY` query results to a file, or change
+/// session settings.
+pub(crate) fn read_only_sql_options() -> SQLOptions {
+    SQLOptions::new()
+        .with_allow_ddl(false)
+        .with_allow_dml(false)
+        .with_allow_statements(false)
 }
 
 // ============================================================================

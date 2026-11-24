@@ -71,8 +71,7 @@ class ArrowAdapter(DBAdapter):
     def remove_table(self, name: str) -> None:
         """Remove a fixture table to exercise missing-telemetry handling."""
         with self._lock:
-            with self._engine.query(f'DROP TABLE "{name}"') as reader:
-                reader.read_all()
+            self._engine.deregister_local_table(name)
             del self.tables[name]
 
     def query(self, sql: str, params: tuple = ()) -> list[dict[str, Any]]:
