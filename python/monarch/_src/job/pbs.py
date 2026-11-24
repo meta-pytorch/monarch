@@ -66,6 +66,7 @@ class PBSJob(JobTrait):
         mpiexec: str = "mpiexec",
         mpiexec_args: Sequence[str] = (),
         bind_to: Optional[str] = None,
+        workdir: Optional[str] = None,
     ) -> None:
         """
         Args:
@@ -86,6 +87,9 @@ class PBSJob(JobTrait):
             bind_to: Optional IP address on which workers listen, without a port.
                       When set, workers advertise their hostname while binding
                       this address through the ``dial_to@bind_to`` alias format.
+            workdir: Directory the job runs in. If None, the directory ``qsub`` ran
+                      from (``$PBS_O_WORKDIR``); PBS has no option for it, unlike
+                      SLURM's ``--chdir``.
         """
         configure(default_transport=ChannelTransport.TcpWithHostname)
         self._meshes = meshes
@@ -100,6 +104,7 @@ class PBSJob(JobTrait):
         self._job_start_timeout = job_start_timeout
         self._mpiexec = mpiexec
         self._mpiexec_args = mpiexec_args
+        self._workdir = workdir
         try:
             self._bind_to = (
                 str(ipaddress.ip_address(bind_to)) if bind_to is not None else None
@@ -118,6 +123,8 @@ class PBSJob(JobTrait):
         # transport config so the client's host_agent serves on a TCP address
         # remote workers can dial back.
         self.__dict__.update(state)
+        # Jobs pickled before workdir existed.
+        self.__dict__.setdefault("_workdir", None)
         configure(default_transport=ChannelTransport.TcpWithHostname)
 
     def add_mesh(self, name: str, num_nodes: int) -> None:
@@ -208,7 +215,8 @@ class PBSJob(JobTrait):
             runner.append(client_script)
 
         batch_script = "\n".join(pbs_directives)
-        batch_script += '\ncd "$PBS_O_WORKDIR"\n'
+        workdir = shlex.quote(self._workdir) if self._workdir else '"$PBS_O_WORKDIR"'
+        batch_script += f"\ncd {workdir}\n"
         batch_script += shlex.join(runner) + "\n"
 
         logger.info(f"Submitting PBS job with {num_nodes} nodes")
@@ -340,6 +348,7 @@ class PBSJob(JobTrait):
             and spec._mpiexec == self._mpiexec
             and spec._mpiexec_args == self._mpiexec_args
             and spec._bind_to == self._bind_to
+            and spec._workdir == self._workdir
             and self._jobs_active()
         )
 

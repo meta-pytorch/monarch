@@ -117,6 +117,27 @@ def test_launcher_options_reach_the_runner(tmp_path, monkeypatch):
     assert "--bind-to 0.0.0.0" in runner
 
 
+def test_workdir_sets_the_job_directory(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    with patch("monarch._src.job.pbs.subprocess.run", side_effect=_fake_qsub) as mock:
+        _make_job(workdir="/shared/my repo").apply(client_script="python train.py")
+
+    lines = _submitted_script(mock).splitlines()
+    assert "cd '/shared/my repo'" in lines
+    assert 'cd "$PBS_O_WORKDIR"' not in lines
+    # the job state is still written to the apply() cwd
+    assert (tmp_path / ".monarch" / "job_state.pkl").exists()
+
+
+def test_job_pickled_without_workdir_still_loads():
+    job = _make_job()
+    state = dict(job.__dict__)
+    del state["_workdir"]
+    restored = PBSJob.__new__(PBSJob)
+    restored.__setstate__(state)
+    assert restored._workdir is None
+
+
 def test_optional_directives_omitted_when_unset(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     with patch("monarch._src.job.pbs.subprocess.run", side_effect=_fake_qsub) as mock:
