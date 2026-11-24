@@ -14,7 +14,6 @@ arrow-row = { version = "57", git = "https://github.com/apache/arrow-rs", rev = 
 arrow-schema = { version = "57", git = "https://github.com/apache/arrow-rs", rev = "fcfe2b4160f6c99107dc89edecdfcd3ff9a4c867" }
 arrow-select = { version = "57", git = "https://github.com/apache/arrow-rs", rev = "fcfe2b4160f6c99107dc89edecdfcd3ff9a4c867" }
 arrow-string = { version = "57", git = "https://github.com/apache/arrow-rs", rev = "fcfe2b4160f6c99107dc89edecdfcd3ff9a4c867" }
-bindgen = { git = "https://github.com/jsgf/rust-bindgen", rev = "4d385d21c160e6ee1f443aeb7e00528a1dc7fd44" }
 boring = { git = "https://github.com/signalapp/boring", rev = "1405df0a23a0335618f88ed328c76f67646b088f" }
 boring-sys = { git = "https://github.com/signalapp/boring", rev = "1405df0a23a0335618f88ed328c76f67646b088f" }
 cxx = { git = "https://github.com/facebookexperimental/cxx.git", rev = "b835645da52253df462725516fbd460ef000d496" }
