@@ -475,6 +475,7 @@ async fn bootstrap_host() -> GlobalState {
             0,
             local_proc_agent.bind(),
         ),
+        &host_mesh,
     )
     .expect("failed to create proc mesh ref");
     let actor_instance = local_proc
