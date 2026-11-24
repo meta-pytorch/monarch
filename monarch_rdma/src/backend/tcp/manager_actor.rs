@@ -131,7 +131,7 @@ struct SendTransferResult {
     result: Result<(), String>,
 }
 
-/// Fatal error from the receive loop.
+/// Fatal error from a transfer background task.
 ///
 /// The handler logs the error and returns `Err`, which triggers a
 /// supervision event and crashes the actor.
@@ -301,11 +301,13 @@ impl TcpManagerActor {
             let cancel = cancel.clone();
 
             tokio::spawn(async move {
+                let mut chunks_sent = 0usize;
                 let sender_name = format!(
                     "tcp_chunk_sender_{}",
                     hyperactor_mesh::shortuuid::ShortUuid::generate()
                 );
                 let instance = proc.client(&sender_name);
+                let instance = Arc::new(instance);
 
                 loop {
                     if cancel.is_cancelled() {
@@ -324,7 +326,7 @@ impl TcpManagerActor {
                     // component writes the target byte range concurrently.
                     if let Err(e) = unsafe { mem.read_at(offset, &mut buf) } {
                         error_port.post(
-                            &instance,
+                            &*instance,
                             TransferError {
                                 message: format!("read_at failed at offset {offset}: {e}"),
                             },
@@ -338,14 +340,36 @@ impl TcpManagerActor {
                         data: Part::from(buf.freeze()),
                     };
 
-                    if let Err(e) = conn.send(chunk).await {
-                        error_port.post(
-                            &instance,
-                            TransferError {
-                                message: format!("failed to send chunk at offset {offset}: {e}"),
-                            },
-                        );
-                        return;
+                    let (return_tx, return_rx) = tokio::sync::oneshot::channel();
+                    conn.try_post(chunk, return_tx);
+
+                    {
+                        let error_port = error_port.clone();
+                        let instance = instance.clone();
+                        let cancel = cancel.clone();
+
+                        tokio::spawn(async move {
+                            let result = tokio::select! {
+                                _ = cancel.cancelled() => return,
+                                result = return_rx => result,
+                            };
+
+                            if let Ok(e) = result {
+                                error_port.post(
+                                    &*instance,
+                                    TransferError {
+                                        message: format!(
+                                            "parallel channel send failed for transfer {transfer_id}, chunk {idx} at offset {offset}: {e}"
+                                        ),
+                                    },
+                                );
+                            }
+                        });
+                    }
+                    chunks_sent += 1;
+
+                    if chunks_sent.is_multiple_of(8) {
+                        tokio::task::yield_now().await;
                     }
                 }
             });
