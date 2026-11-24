@@ -145,7 +145,8 @@ def configure(
         enable_dest_actor_reordering_buffer: Enable client-side sequence
             assignment
         mesh_bootstrap_enable_pdeathsig: Enable parent-death signal for
-            spawned processes
+            spawned processes as an extra safeguard. Use the normal shutdown
+            protocol to stop and clean up processes.
         mesh_terminate_concurrency: Maximum concurrent terminations
             during shutdown
         mesh_terminate_timeout: Timeout per child during graceful
