@@ -1,0 +1,4 @@
+## Append samples of your project ##
+resources:
+- monarch_v1alpha1_monarchmesh.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples
