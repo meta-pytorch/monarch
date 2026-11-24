@@ -599,7 +599,7 @@ class ProcMesh(MeshTrait):
         Activate the device mesh. Operations done from insided this context manager will be
         distributed tensor operations. Each operation will be excuted on each device in the mesh.
 
-        See https://meta-pytorch.org/monarch/generated/examples/distributed_tensors.html for more information
+        See https://meta-pytorch.org/monarch/stable/generated/examples/distributed_tensors.html for more information
 
 
             with mesh.activate():
