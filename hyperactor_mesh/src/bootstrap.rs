@@ -119,6 +119,7 @@ use hybrid_vsock::HybridVsockProc;
 use hybrid_vsock::ReleaseOutcome;
 use reachability::ProcConnectionSetup;
 use reachability::ProcResources;
+use reachability::UnixServeAddr;
 
 declare_attrs! {
     /// Enable forwarding child stdout/stderr over the mesh log
@@ -210,6 +211,17 @@ declare_attrs! {
         Some("mesh_terminate_timeout".to_string()),
     ))
     pub attr MESH_TERMINATE_TIMEOUT: Duration = Duration::from_secs(10);
+
+    /// Parent directory for the host's per-proc Unix sockets. When set,
+    /// it is tried before `$XDG_RUNTIME_DIR`, the system tempdir
+    /// (`$TMPDIR`), and `/tmp`. Set it when those are shared with other
+    /// programs or too long for Unix socket paths (e.g. a batch scheduler's
+    /// per-job `TMPDIR`). Empty (the default) means unset.
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_MESH_SOCKET_DIR".to_string()),
+        Some("socket_dir".to_string()),
+    ))
+    pub attr SOCKET_DIR: String = String::new();
 }
 
 pub const CLIENT_TRACE_ID_ENV: &str = "MONARCH_CLIENT_TRACE_ID";
@@ -416,15 +428,17 @@ pub enum Bootstrap {
         callback_addr: ChannelAddr,
         /// Directory for storing proc socket files. Procs place their sockets
         /// in this directory, so that they can be looked up by other procs
-        /// for direct transfer.
-        socket_dir_path: PathBuf,
+        /// for direct transfer. `None` when the manager has no usable socket
+        /// directory; the proc then reaches its siblings through the host.
+        socket_dir_path: Option<PathBuf>,
         /// Optional config snapshot (`hyperactor_config::Attrs`)
         /// captured by the parent. If present, the child installs it
         /// as the `ClientOverride` layer so the parent's effective config
         /// takes precedence over Defaults.
         config: Option<Attrs>,
         /// The address the proc serves on and reports through the callback.
-        /// When absent, the proc binds `local_proc_addr(socket_dir_path)`.
+        /// When absent, the proc binds `local_proc_addr(socket_dir_path)`,
+        /// which requires `socket_dir_path`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         serve_addr: Option<ChannelAddr>,
     },
@@ -594,7 +608,7 @@ impl Bootstrap {
                     %proc_id,
                     %backend_addr,
                     %callback_addr,
-                    socket_dir_path = %socket_dir_path.display(),
+                    ?socket_dir_path,
                 )
                 .entered();
                 if let Some(attrs) = config {
@@ -619,7 +633,8 @@ impl Bootstrap {
                 }
 
                 let local_addr = proc_id.addr().clone();
-                let serve_addr = proc_serve_addr(serve_addr, &socket_dir_path, proc_id.id())?;
+                let serve_addr =
+                    proc_serve_addr(serve_addr, socket_dir_path.as_deref(), proc_id.id())?;
 
                 // The following is a modified host::spawn_proc to support direct
                 // dialing between spawned sibling procs: 1) we bind each proc to a
@@ -1922,8 +1937,9 @@ pub struct BootstrapProcManager {
 
     /// Directory for storing proc socket files. Procs place their
     /// sockets in this directory, so that they can be looked up by
-    /// other procs for direct transfer.
-    socket_dir: TempDir,
+    /// other procs for direct transfer. `None` when no candidate
+    /// directory is usable; Unix procs then serve over loopback TCP.
+    socket_dir: Option<TempDir>,
 
     /// The same gateway used by the host's existing message listener.
     /// New per-VM receive tasks route messages through it too.
@@ -1972,7 +1988,7 @@ impl BootstrapProcManager {
             command,
             children: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             file_appender,
-            socket_dir: runtime_dir()?,
+            socket_dir: runtime_dir(),
             gateway,
             #[cfg(test)]
             cleanup_probe: None,
@@ -2033,8 +2049,8 @@ impl BootstrapProcManager {
     }
 
     /// The socket directory, where per-proc Unix sockets are placed.
-    pub fn socket_dir(&self) -> &Path {
-        self.socket_dir.path()
+    pub fn socket_dir(&self) -> Option<&Path> {
+        self.socket_dir.as_ref().map(TempDir::path)
     }
 
     /// Return the current [`ProcStatus`] for the given [`ProcAddr`], if
@@ -2117,16 +2133,31 @@ impl BootstrapProcManager {
         match reachability {
             // Unix procs connect to host_backend; its listener already routes
             // messages through the host's gateway.
-            ProcReachability::Unix => {
-                ProcConnectionSetup::create_unix(proc_id, self.socket_dir.path(), host_backend)
-            }
+            // Only a missing or too-long socket path falls back to TCP; other
+            // setup errors go to the caller.
+            ProcReachability::Unix => match UnixServeAddr::new(self.socket_dir(), proc_id) {
+                UnixServeAddr::Available(serve_addr) => {
+                    ProcConnectionSetup::create_unix(serve_addr, host_backend)
+                }
+                UnixServeAddr::Unavailable(reason) => {
+                    tracing::warn!(
+                        %proc_id,
+                        "unix socket unavailable, serving proc over loopback tcp: {reason:#}"
+                    );
+                    ProcConnectionSetup::create_tcp(host_backend)
+                }
+            },
             // A VM cannot connect to host_backend directly. Create a listener it
             // can reach, supplying the same gateway to route its messages.
-            ProcReachability::HybridVsock => ProcConnectionSetup::create_hybrid_vsock(
-                proc_id,
-                self.socket_dir.path(),
-                &self.gateway,
-            ),
+            ProcReachability::HybridVsock => {
+                let socket_dir = self.socket_dir().ok_or_else(|| {
+                    HostError::ProcessConfigurationFailure(
+                        proc_id.clone(),
+                        anyhow::anyhow!("hybrid vsock requires a socket directory"),
+                    )
+                })?;
+                ProcConnectionSetup::create_hybrid_vsock(proc_id, socket_dir, &self.gateway)
+            }
         }
     }
 
@@ -2355,7 +2386,7 @@ impl ProcManager for BootstrapProcManager {
             proc_id: proc_id.clone(),
             backend_addr: connections.proc.backend_addr,
             callback_addr: connections.proc.readiness_addr,
-            socket_dir_path: self.socket_dir.path().to_owned(),
+            socket_dir_path: self.socket_dir().map(Path::to_owned),
             config: Some(config.client_config_override.clone()),
             serve_addr: Some(connections.proc.serve_addr),
         };
@@ -2746,12 +2777,13 @@ impl Write for Debug {
 /// supplied one, otherwise its deterministic socket in `socket_dir`.
 pub(crate) fn proc_serve_addr(
     serve_addr: Option<ChannelAddr>,
-    socket_dir: &Path,
+    socket_dir: Option<&Path>,
     proc_id: &hyperactor::id::ProcId,
 ) -> anyhow::Result<ChannelAddr> {
-    match serve_addr {
-        Some(addr) => Ok(addr),
-        None => Ok(local_proc_addr(socket_dir, proc_id)?.0),
+    match (serve_addr, socket_dir) {
+        (Some(addr), _) => Ok(addr),
+        (None, Some(socket_dir)) => Ok(local_proc_addr(socket_dir, proc_id)?.0),
+        (None, None) => anyhow::bail!("proc {proc_id}: no serve address and no socket directory"),
     }
 }
 
@@ -2775,17 +2807,56 @@ pub(crate) fn local_proc_addr(
     Ok((addr, path))
 }
 
-/// Create a new runtime [`TempDir`]. The directory is created in
-/// `$XDG_RUNTIME_DIR` if set and the directory exists, otherwise
-/// falling back to the system tempdir.
-fn runtime_dir() -> io::Result<TempDir> {
-    if let Some(runtime_dir) = std::env::var_os("XDG_RUNTIME_DIR") {
-        let path = PathBuf::from(runtime_dir);
-        if path.is_dir() {
-            return tempfile::tempdir_in(path);
+/// Bytes reserved under the socket directory for the longest socket path
+/// placed there: `vm-XXXXXX/v.sock_10002` for hybrid-vsock procs, plus
+/// headroom. Per-proc Unix sockets are shorter.
+const SOCKET_PATH_RESERVE: usize = 32;
+
+/// Create the runtime [`TempDir`] for proc sockets in the first candidate
+/// parent where it can be created and its socket paths fit a Unix socket
+/// address: [`SOCKET_DIR`] (if set), `$XDG_RUNTIME_DIR` (if it exists),
+/// the system tempdir (`$TMPDIR`), then `/tmp`. Returns `None` if no
+/// candidate works.
+fn runtime_dir() -> Option<TempDir> {
+    let configured = Some(hyperactor_config::global::get_cloned(SOCKET_DIR))
+        .filter(|dir| !dir.is_empty())
+        .map(PathBuf::from);
+    let xdg = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .filter(|path| path.is_dir());
+    let candidates = configured
+        .into_iter()
+        .chain(xdg)
+        .chain([std::env::temp_dir(), PathBuf::from("/tmp")]);
+    runtime_dir_in(candidates)
+}
+
+fn runtime_dir_in(candidates: impl IntoIterator<Item = PathBuf>) -> Option<TempDir> {
+    let dir = candidates.into_iter().find_map(|parent| {
+        match tempfile::tempdir_in(&parent) {
+            Ok(dir) if socket_paths_fit(dir.path()) => return Some(dir),
+            Ok(dir) => tracing::warn!(
+                parent = %parent.display(),
+                path_len = dir.path().as_os_str().len(),
+                "socket directory candidate too long for unix socket paths"
+            ),
+            Err(err) => tracing::warn!(
+                parent = %parent.display(),
+                %err,
+                "cannot create socket directory candidate"
+            ),
         }
+        None
+    });
+    if dir.is_none() {
+        tracing::warn!("no usable socket directory: unix procs will serve over loopback tcp");
     }
-    tempfile::tempdir()
+    dir
+}
+
+/// Whether every socket path placed under `dir` fits a Unix socket address.
+fn socket_paths_fit(dir: &Path) -> bool {
+    std::os::unix::net::SocketAddr::from_pathname(dir.join("x".repeat(SOCKET_PATH_RESERVE))).is_ok()
 }
 
 #[cfg(test)]
@@ -3157,7 +3228,7 @@ mod tests {
             .expect("hybrid procs get a uds path");
         assert_eq!(uds.file_name().unwrap(), "v.sock");
         let vm_dir = uds.parent().unwrap();
-        assert_eq!(vm_dir.parent().unwrap(), fx.manager.socket_dir());
+        assert_eq!(vm_dir.parent(), fx.manager.socket_dir());
         assert!(
             vm_dir
                 .file_name()
@@ -3357,7 +3428,7 @@ mod tests {
             .unwrap()
             .vsock_uds_path
             .unwrap();
-        assert!(vm_dirs(fx.manager.socket_dir()).is_empty());
+        assert!(vm_dirs(fx.manager.socket_dir().unwrap()).is_empty());
         assert!(
             std::os::unix::net::UnixStream::connect(PathBuf::from(format!(
                 "{}_{}",
@@ -3394,7 +3465,7 @@ mod tests {
             .vsock_uds_path
             .expect("hybrid launch prepares a VM socket directory");
         assert!(!uds.parent().unwrap().exists());
-        assert!(vm_dirs(fx.manager.socket_dir()).is_empty());
+        assert!(vm_dirs(fx.manager.socket_dir().unwrap()).is_empty());
     }
 
     /// RCH-5 ([registry](super::reachability)):
@@ -3422,7 +3493,7 @@ mod tests {
         drop(children_guard);
         assert_eq!(bounded("kill", fx.killed.recv()).await.unwrap(), proc_id);
         wait_closed(&ingress).await;
-        assert!(vm_dirs(fx.manager.socket_dir()).is_empty());
+        assert!(vm_dirs(fx.manager.socket_dir().unwrap()).is_empty());
     }
 
     /// RCH-3 ([registry](super::reachability)):
@@ -3463,7 +3534,7 @@ mod tests {
         let mut fx = hybrid_fixture(ProcReachability::Unix, RecordingBehavior::Succeed);
         let proc_id = test_proc_id("unix-spawn");
         let host_backend = ChannelAddr::any(ChannelTransport::Unix);
-        let expected_serve_addr = local_proc_addr(fx.manager.socket_dir(), proc_id.id())
+        let expected_serve_addr = local_proc_addr(fx.manager.socket_dir().unwrap(), proc_id.id())
             .unwrap()
             .0;
         fx.manager
@@ -3488,7 +3559,7 @@ mod tests {
         assert_eq!(backend_addr, host_backend);
         assert_eq!(serve_addr, Some(expected_serve_addr));
         assert!(matches!(callback_addr, ChannelAddr::Unix(_)));
-        assert!(vm_dirs(fx.manager.socket_dir()).is_empty());
+        assert!(vm_dirs(fx.manager.socket_dir().unwrap()).is_empty());
 
         // With no callback, the callback task still ends once the proc exits.
         fx.launcher.report_exit();
@@ -3503,30 +3574,79 @@ mod tests {
     }
 
     /// RCH-4 ([registry](super::reachability)):
-    /// reject an invalid Unix address before calling the launcher.
+    /// a Unix proc whose socket path is too long, or whose manager has no
+    /// socket directory, serves over loopback TCP.
     #[async_timed_test(timeout_secs = 60)]
-    async fn test_unix_invalid_socket_path_does_not_launch() {
-        let mut fx = hybrid_fixture(ProcReachability::Unix, RecordingBehavior::Succeed);
+    async fn test_unix_spawn_without_socket_path_uses_tcp() {
         let base = tempfile::tempdir().unwrap();
         let long_dir = base.path().join("d".repeat(100));
         tokio::fs::create_dir(&long_dir).await.unwrap();
-        fx.manager.socket_dir = tempfile::tempdir_in(&long_dir).unwrap();
 
-        let result = fx
-            .manager
-            .spawn(
-                test_proc_id("unix-long-path"),
-                ChannelAddr::any(ChannelTransport::Unix),
-                cleanup_test_config(),
-            )
-            .await;
+        for socket_dir in [Some(tempfile::tempdir_in(&long_dir).unwrap()), None] {
+            let mut fx = hybrid_fixture(ProcReachability::Unix, RecordingBehavior::Succeed);
+            fx.manager.socket_dir = socket_dir;
+            let host_backend = ChannelAddr::any(ChannelTransport::Unix);
+            fx.manager
+                .spawn(
+                    test_proc_id("unix-no-socket"),
+                    host_backend.clone(),
+                    cleanup_test_config(),
+                )
+                .await
+                .unwrap();
 
-        assert!(matches!(
-            result,
-            Err(HostError::ProcessConfigurationFailure(..))
-        ));
-        assert!(fx.launched.try_recv().is_err(), "nothing should launch");
-        assert!(fx.manager.children.lock().await.is_empty());
+            let opts = bounded("launch", fx.launched.recv()).await.unwrap();
+            let Bootstrap::Proc {
+                backend_addr,
+                callback_addr,
+                serve_addr,
+                ..
+            } = decode_payload(&opts)
+            else {
+                panic!("expected a proc payload");
+            };
+            assert_eq!(backend_addr, host_backend);
+            assert!(
+                matches!(serve_addr, Some(ChannelAddr::Tcp(addr)) if addr.ip().is_loopback()),
+                "serve address should be loopback tcp: {serve_addr:?}"
+            );
+            assert!(
+                matches!(callback_addr, ChannelAddr::Tcp(addr) if addr.ip().is_loopback()),
+                "readiness address should be loopback tcp: {callback_addr:?}"
+            );
+
+            fx.launcher.report_exit();
+            bounded("cleanup", fx.cleanups.recv()).await.unwrap();
+        }
+    }
+
+    #[test]
+    fn test_runtime_dir_in_skips_unusable_candidates() {
+        let base = tempfile::tempdir().unwrap();
+        let long_dir = base.path().join("d".repeat(100));
+        std::fs::create_dir(&long_dir).unwrap();
+        let missing = base.path().join("missing");
+        let short = tempfile::tempdir().unwrap();
+
+        let dir = runtime_dir_in([long_dir.clone(), missing.clone(), short.path().to_owned()])
+            .expect("the short candidate should be usable");
+        assert_eq!(dir.path().parent(), Some(short.path()));
+
+        assert!(
+            runtime_dir_in([long_dir, missing]).is_none(),
+            "no candidate is usable: one is too long and one does not exist"
+        );
+    }
+
+    #[test]
+    fn test_runtime_dir_prefers_configured_socket_dir() {
+        let configured = tempfile::tempdir().unwrap();
+        let config = hyperactor_config::global::lock();
+        let _socket_dir =
+            config.override_key(SOCKET_DIR, configured.path().to_str().unwrap().to_string());
+
+        let dir = runtime_dir().expect("the configured directory should be usable");
+        assert_eq!(dir.path().parent(), Some(configured.path()));
     }
 
     /// RCH-4 ([registry](super::reachability)):
@@ -3890,7 +4010,7 @@ mod tests {
                     cid: 2,
                     port: 10001,
                 }),
-                socket_dir_path: PathBuf::from("notexist"),
+                socket_dir_path: Some(PathBuf::from("notexist")),
                 config: None,
                 serve_addr: serve_addr.clone(),
             };
@@ -3922,13 +4042,14 @@ mod tests {
             port: 10002,
         });
         assert_eq!(
-            proc_serve_addr(Some(given.clone()), dir.path(), proc_id.id()).unwrap(),
+            proc_serve_addr(Some(given.clone()), Some(dir.path()), proc_id.id()).unwrap(),
             given
         );
         assert_eq!(
-            proc_serve_addr(None, dir.path(), proc_id.id()).unwrap(),
+            proc_serve_addr(None, Some(dir.path()), proc_id.id()).unwrap(),
             local_proc_addr(dir.path(), proc_id.id()).unwrap().0
         );
+        assert!(proc_serve_addr(None, None, proc_id.id()).is_err());
     }
 
     #[test]
@@ -3937,7 +4058,7 @@ mod tests {
             proc_id: test_proc_id("foo_0"),
             backend_addr: ChannelAddr::any(ChannelTransport::Tcp(TcpMode::Localhost)),
             callback_addr: ChannelAddr::any(ChannelTransport::Unix),
-            socket_dir_path: PathBuf::from("notexist"),
+            socket_dir_path: Some(PathBuf::from("notexist")),
             config: None,
             serve_addr: None,
         };
@@ -4006,7 +4127,7 @@ mod tests {
                 backend_addr: ChannelAddr::any(ChannelTransport::Unix),
                 callback_addr: ChannelAddr::any(ChannelTransport::Unix),
                 config: Some(attrs.clone()),
-                socket_dir_path: socket_dir.path().to_owned(),
+                socket_dir_path: Some(socket_dir.path().to_owned()),
                 serve_addr: None,
             };
             let env_str = original.to_env_safe_string().expect("encode bootstrap");
