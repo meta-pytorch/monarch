@@ -14,6 +14,7 @@ import logging
 import operator
 import os
 import re
+import socket
 import subprocess
 import sys
 import tempfile
@@ -2097,6 +2098,65 @@ def test_fd_bootstrap():
     hosts.shutdown().get()
     for proc in procs:
         proc.wait()
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="linux-only")
+@pytest.mark.timeout(120)
+@isolate_in_subprocess
+async def test_dial_address_differs_from_advertised_address() -> None:
+    """A worker that advertises one address while the client dials another,
+    as on clusters where a node's /etc/hosts resolves its own name to IPv6 and
+    DNS gives peers IPv4, must still serve casts and workspace sync."""
+    with tempfile.TemporaryDirectory() as workspace_src:
+        procs = []
+        workers = []
+        workspace_dsts = []
+        for _ in range(2):
+            sock = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+            sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+            sock.bind(("::", 0))
+            port = sock.getsockname()[1]
+            fd = sock.fileno()
+            workspace_dst = tempfile.mkdtemp()
+            workspace_dsts.append(workspace_dst)
+            env = {**os.environ, "WORKSPACE_DIR": workspace_dst}
+            if "FB_XAR_INVOKED_NAME" in os.environ:
+                env["PYTHONPATH"] = ":".join(sys.path)
+            address = f"tcp://[::1]:{port}@tcp://[::]:fd{fd}"
+            procs.append(
+                subprocess.Popen(
+                    [
+                        sys.executable,
+                        "-c",
+                        "from monarch.actor import run_worker_loop_forever; "
+                        f"run_worker_loop_forever(address={address!r}, "
+                        'ca="trust_all_connections")',
+                    ],
+                    env=env,
+                    pass_fds=(fd,),
+                )
+            )
+            sock.close()
+            workers.append(f"tcp://127.0.0.1:{port}")
+
+        try:
+            # pyrefly: ignore [bad-argument-type]
+            hosts = attach_to_workers(ca="trust_all_connections", workers=workers)
+            hello = hosts.spawn_procs(per_host={"procs": 2}).spawn("hello", Hello)
+            replies = await hello.doit.call()
+            assert [v for _, v in replies.items()] == ["hello!"] * 4
+
+            with open(os.path.join(workspace_src, "new_file"), "w") as f:
+                f.write("hello world")
+            await hosts.sync_workspace(Workspace(dirs={workspace_src: ""}))
+            for workspace_dst in workspace_dsts:
+                assert os.listdir(workspace_dst) == ["new_file"]
+
+            await hosts.shutdown()
+        finally:
+            for proc in procs:
+                proc.kill()
+                proc.wait()
 
 
 class HostMeshActor(Actor):
