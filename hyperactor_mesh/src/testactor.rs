@@ -52,6 +52,7 @@ use crate::ActorMesh;
 #[cfg(test)]
 use crate::ActorMeshRef;
 use crate::ProcMeshRef;
+use crate::actor_mesh::ACTOR_MESH_ID;
 use crate::casting::CAST_POINT;
 use crate::casting::CastInfo;
 use crate::mesh_id::ActorMeshId;
@@ -504,13 +505,17 @@ pub struct WrapperActor {
     proc_mesh: ProcMeshRef,
     // Needs to be a mesh so we own this actor and have a controller for it.
     mesh: Option<ActorMesh<TestActor>>,
-    supervisor: hyperactor::PortRef<MeshFailure>,
+    supervisor: hyperactor::PortRef<ActorSupervisionEvent>,
     test_name: ActorMeshId,
 }
 
 #[async_trait]
 impl hyperactor::RemoteSpawn for WrapperActor {
-    type Params = (ProcMeshRef, hyperactor::PortRef<MeshFailure>, ActorMeshId);
+    type Params = (
+        ProcMeshRef,
+        hyperactor::PortRef<ActorSupervisionEvent>,
+        ActorMeshId,
+    );
 
     async fn new(
         (proc_mesh, supervisor, test_name): Self::Params,
@@ -534,6 +539,19 @@ impl Actor for WrapperActor {
                 .await?,
         );
         Ok(())
+    }
+
+    async fn handle_supervision_event(
+        &mut self,
+        this: &Instance<Self>,
+        event: &ActorSupervisionEvent,
+    ) -> Result<bool, anyhow::Error> {
+        if event.is_error() && event.labels.get(ACTOR_MESH_ID).as_ref() == Some(&self.test_name) {
+            tracing::info!(%event, "got supervision event from child");
+            self.supervisor.post(this, event.clone());
+            return Ok(true);
+        }
+        Ok(!event.is_error())
     }
 }
 
@@ -591,12 +609,7 @@ impl Handler<NextSupervisionFailure> for WrapperActor {
 #[async_trait]
 impl Handler<MeshFailure> for WrapperActor {
     async fn handle(&mut self, cx: &Context<Self>, msg: MeshFailure) -> Result<(), anyhow::Error> {
-        // All supervision events are considered handled so they don't bubble up
-        // to the client (who isn't listening for MeshFailure).
-        tracing::info!("got supervision event from child: {}", msg);
-        // Send to a port so the client can view the messages.
-        // Ignore the error if there is one.
-        let _ = self.supervisor.post(cx, msg.clone());
+        self.supervisor.post(cx, msg.event);
         Ok(())
     }
 }

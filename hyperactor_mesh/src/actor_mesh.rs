@@ -38,9 +38,11 @@ use hyperactor::ActorRef;
 use hyperactor::AnyActorHandle;
 use hyperactor::Endpoint as _;
 use hyperactor::PortRef;
+use hyperactor::ProcAddr;
 use hyperactor::RemoteEndpoint as _;
 use hyperactor::RemoteHandles;
 use hyperactor::RemoteMessage;
+use hyperactor::RemoteSpawn;
 use hyperactor::StatusMessage;
 use hyperactor::actor::ActorStatus;
 use hyperactor::actor::Referable;
@@ -59,6 +61,9 @@ use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
 use hyperactor_config::Flattrs;
 use hyperactor_config::attrs::declare_attrs;
+use hyperactor_remote::ActorSpawnerEndpoint as _;
+use hyperactor_remote::SerializedParams;
+use hyperactor_remote::actor_spawner::SpawnActor;
 use ndslice::ViewExt as _;
 use ndslice::view;
 use ndslice::view::Ranked;
@@ -73,6 +78,7 @@ use crate::Error;
 use crate::ProcMeshRef;
 use crate::ValueMesh;
 use crate::casting;
+use crate::casting::CAST_POINT;
 use crate::config::MAX_CAST_FANOUT;
 use crate::host_mesh::GET_PROC_STATE_MAX_IDLE;
 use crate::host_mesh::mesh_to_rankedvalues_with_default;
@@ -84,6 +90,7 @@ use crate::mesh_id::ActorMeshId;
 use crate::mesh_id::ProcMeshId;
 use crate::monitor::MeshMonitor;
 use crate::proc_mesh::GET_ACTOR_STATE_MAX_IDLE;
+use crate::proc_mesh::data_mesh_supervision;
 use crate::proc_mesh::telemetry_actor_mesh_id;
 use crate::proc_mesh::telemetry_data_actor_mesh_id;
 use crate::resource;
@@ -109,10 +116,10 @@ declare_attrs! {
 /// An ActorMesh is a collection of ranked A-typed actors: the lifecycle owner
 /// over an [`ActorMeshRef`], which is the cast/address surface.
 ///
-/// The mesh may be *managed* — created via `ProcMesh` and backed by a controller
-/// — or *data-only* — spawned through an `ActorSpawner` and carrying each rank's
-/// local lifecycle handle. Both variants own their actors and can stop them.
-/// Monitoring works through the mesh's members in either case.
+/// The mesh may be *managed* — backed by an `ActorMeshController` — or
+/// *data-only* — a [`DataActorMesh`] spawned through actor spawners. Both
+/// variants own their actors and can stop them. Monitoring works through the
+/// mesh's members in either case.
 ///
 /// Bound note: `A: Referable` because the mesh stores/returns `ActorRef<A>`,
 /// which is only defined for `A: Referable`.
@@ -121,7 +128,7 @@ pub struct ActorMesh<A: Referable> {
     /// The cast/address surface, either controller-backed (`Managed`) or
     /// detached (`Data`).
     current_ref: ActorMeshRef<A>,
-    lifecycle: ActorMeshLifecycle,
+    lifecycle: ActorMeshLifecycle<A>,
     /// The controller a managed mesh's [`ActorMesh::stop`] sent `Stop` to,
     /// kept so [`ActorMesh::wait_for_terminal`] can read the outcome.
     stopping_controller: Option<ActorRef<ActorMeshController<A>>>,
@@ -130,15 +137,35 @@ pub struct ActorMesh<A: Referable> {
 /// The local lifecycle handle for one spawner-backed rank.
 pub(crate) type ActorMeshStopHandle = AnyActorHandle;
 
-#[derive(Debug, Clone)]
-enum ActorMeshLifecycle {
+#[derive(Debug)]
+enum ActorMeshLifecycle<A: Referable> {
     Managed,
-    Data {
-        stop_handles: Vec<ActorMeshStopHandle>,
-        stop_requested: Arc<OnceCell<()>>,
-        /// Set once every rank has started; see [`ActorMesh::wait_started`].
-        started: Arc<OnceCell<()>>,
-    },
+    Data(DataActorMesh<A>),
+}
+
+impl<A: Referable> Clone for ActorMeshLifecycle<A> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Managed => Self::Managed,
+            Self::Data(data) => Self::Data(data.clone()),
+        }
+    }
+}
+
+/// An owned data-only actor mesh: a [`DataActorMeshRef`] together with each
+/// rank's local supervisor handle.
+///
+/// The mesh is spawned through actor spawners (see
+/// [`DataActorMeshRef::spawn`]) and has no controller. It is usable as soon as
+/// it is constructed: each proc queues messages for its actor until the actor
+/// starts. Clones share the stop fence, so [`DataActorMesh::stop`] is one-shot
+/// across owner clones.
+pub struct DataActorMesh<A: Referable> {
+    current_ref: DataActorMeshRef<A>,
+    stop_handles: Vec<ActorMeshStopHandle>,
+    stop_requested: Arc<OnceCell<()>>,
+    /// Set once every rank has started; see [`DataActorMesh::wait_started`].
+    started: Arc<OnceCell<()>>,
 }
 
 /// The data-only variant of [`ActorMeshRef`]: a cheap, detached cast/address
@@ -149,7 +176,7 @@ enum ActorMeshLifecycle {
 /// slices and serialized copies keep. It has no remote supervision stream; a
 /// caller monitors it on demand via [`ActorMeshRef::monitor`]. Multi-member
 /// casting uses a bounded-fanout cast domain.
-pub struct DataActorMesh<A: Referable> {
+pub struct DataActorMeshRef<A: Referable> {
     id: ActorMeshId,
     members: ValueMesh<ActorRef<A>>,
     cast_domain: Arc<ActorMeshCastDomain>,
@@ -188,9 +215,9 @@ impl DataMeshDisplayName {
     }
 }
 
-impl<A: Referable> fmt::Debug for DataActorMesh<A> {
+impl<A: Referable> fmt::Debug for DataActorMeshRef<A> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("DataActorMesh")
+        f.debug_struct("DataActorMeshRef")
             .field("id", &self.id)
             .field("members", &self.members)
             .field("cast_domain", &self.cast_domain)
@@ -222,38 +249,6 @@ impl<A: Referable> ActorMesh<A> {
         }
     }
 
-    /// Create a data actor mesh from actor refs and their lifecycle handles.
-    pub(crate) fn try_new_data(
-        id: ActorMeshId,
-        region: Region,
-        members: Vec<ActorRef<A>>,
-        stop_handles: Vec<ActorMeshStopHandle>,
-        display_name: DataMeshDisplayName,
-    ) -> crate::Result<Self> {
-        assert!(!stop_handles.is_empty(), "data actor mesh must own actors");
-        assert_eq!(
-            stop_handles.len(),
-            members.len(),
-            "data actor mesh must own one lifecycle handle per member"
-        );
-        let current_ref = DataActorMesh::try_new(id, region, members)
-            .map(|data| ActorMeshRef::Data(data.with_display_name(display_name)))
-            .inspect_err(|_| {
-                stop_handles.iter().for_each(|handle| {
-                    let _ = handle.stop("data mesh construction failed");
-                });
-            })?;
-        Ok(Self {
-            current_ref,
-            lifecycle: ActorMeshLifecycle::Data {
-                stop_handles,
-                stop_requested: Arc::new(OnceCell::new()),
-                started: Arc::new(OnceCell::new()),
-            },
-            stopping_controller: None,
-        })
-    }
-
     pub(crate) fn set_controller(&mut self, controller: Option<ActorRef<ActorMeshController<A>>>) {
         self.current_ref
             .as_managed_mut()
@@ -271,23 +266,8 @@ impl<A: Referable> ActorMesh<A> {
     /// Either way the mesh is no longer usable once this returns. The shared
     /// stop fence makes a data mesh stop one-shot across owner clones.
     pub fn stop(&mut self, cx: &impl context::Actor, reason: String) -> crate::Result<()> {
-        if let ActorMeshLifecycle::Data {
-            stop_handles,
-            stop_requested,
-            ..
-        } = &mut self.lifecycle
-        {
-            if stop_requested.set(()).is_err() {
-                return Ok(());
-            }
-            let stop_handles = std::mem::take(stop_handles);
-            assert!(
-                !stop_handles.is_empty(),
-                "live data actor mesh must own actors"
-            );
-            for handle in &stop_handles {
-                let _ = handle.stop(&reason);
-            }
+        if let ActorMeshLifecycle::Data(data) = &mut self.lifecycle {
+            data.stop(reason);
             return Ok(());
         }
         // Remove the controller so all future meshes
@@ -341,21 +321,13 @@ impl<A: Referable> ActorMesh<A> {
             }
             return result;
         }
-        let Some(monitor) = self.current_ref.data_monitor(cx) else {
-            return Ok(());
-        };
-        let _activation = monitor.activate(cx);
-        for outcome in monitor.wait_all_terminal().await {
-            if !matches!(
-                outcome,
-                MonitorFailure::ActorStopped { .. }
-                    | MonitorFailure::ActorFailed { .. }
-                    | MonitorFailure::ActorGone { .. }
-            ) {
-                tracing::warn!(actor_mesh = %self.current_ref.id(), %outcome, "could not confirm that an actor stopped");
+        match &self.lifecycle {
+            ActorMeshLifecycle::Managed => Ok(()),
+            ActorMeshLifecycle::Data(data) => {
+                data.wait_for_terminal(cx).await;
+                Ok(())
             }
         }
-        Ok(())
     }
 
     async fn wait_for_controller_stop(
@@ -409,28 +381,115 @@ impl<A: Referable> ActorMesh<A> {
         Err(Error::ActorStopError { statuses: legacy })
     }
 
+    /// Wait until every rank's actor has started. A managed mesh has started
+    /// once its spawn returns; see [`DataActorMesh::wait_started`] for data
+    /// meshes.
+    pub async fn wait_started(&self, cx: &impl context::Actor) -> crate::Result<()> {
+        match &self.lifecycle {
+            ActorMeshLifecycle::Managed => Ok(()),
+            ActorMeshLifecycle::Data(data) => data.wait_started(cx).await,
+        }
+    }
+}
+
+impl<A: Referable> From<DataActorMesh<A>> for ActorMesh<A> {
+    fn from(data: DataActorMesh<A>) -> Self {
+        Self {
+            current_ref: ActorMeshRef::Data(data.current_ref.clone()),
+            lifecycle: ActorMeshLifecycle::Data(data),
+            stopping_controller: None,
+        }
+    }
+}
+
+impl<A: Referable> DataActorMesh<A> {
+    /// Create an owned data mesh from actor refs and their lifecycle handles.
+    /// If the mesh cannot be constructed, every handle receives a best-effort
+    /// stop.
+    pub(crate) fn try_new(
+        id: ActorMeshId,
+        region: Region,
+        members: Vec<ActorRef<A>>,
+        stop_handles: Vec<ActorMeshStopHandle>,
+        display_name: DataMeshDisplayName,
+    ) -> crate::Result<Self> {
+        assert!(!stop_handles.is_empty(), "data actor mesh must own actors");
+        assert_eq!(
+            stop_handles.len(),
+            members.len(),
+            "data actor mesh must own one lifecycle handle per member"
+        );
+        let current_ref = DataActorMeshRef::try_new(id, region, members)
+            .map(|data| data.with_display_name(display_name))
+            .inspect_err(|_| stop_actor_handles(&stop_handles, "data mesh construction failed"))?;
+        Ok(Self {
+            current_ref,
+            stop_handles,
+            stop_requested: Arc::new(OnceCell::new()),
+            started: Arc::new(OnceCell::new()),
+        })
+    }
+
+    /// Signal each rank's local supervisor proxy to stop its actor, without
+    /// waiting for the actors to terminate; use
+    /// [`DataActorMesh::wait_for_terminal`] to wait.
+    ///
+    /// A rank whose proxy has already exited, for example because its actor
+    /// failed, is skipped. The mesh is no longer usable once this returns. The
+    /// shared stop fence makes this one-shot across owner clones.
+    pub fn stop(&mut self, reason: String) {
+        if self.stop_requested.set(()).is_err() {
+            return;
+        }
+        let stop_handles = std::mem::take(&mut self.stop_handles);
+        assert!(
+            !stop_handles.is_empty(),
+            "live data actor mesh must own actors"
+        );
+        stop_actor_handles(&stop_handles, &reason);
+    }
+
+    /// Wait for each rank's actor to reach a terminal status (stopped, failed,
+    /// or no longer present). A rank whose status cannot be confirmed, because
+    /// its status request timed out, is logged and treated as stopped.
+    pub async fn wait_for_terminal(&self, cx: &impl context::Actor) {
+        let monitor = self.current_ref.shared_monitor(cx);
+        let _activation = monitor.activate(cx);
+        for outcome in monitor.wait_all_terminal().await {
+            if !matches!(
+                outcome,
+                MonitorFailure::ActorStopped { .. }
+                    | MonitorFailure::ActorFailed { .. }
+                    | MonitorFailure::ActorGone { .. }
+            ) {
+                tracing::warn!(actor_mesh = %self.current_ref.id(), %outcome, "could not confirm that an actor stopped");
+            }
+        }
+    }
+
     /// Wait until every rank's actor has started, meaning its status is past
     /// [`ActorStatus::Initializing`]. This does not mean the actor has handled
     /// its first message, such as a Python actor's `__init__`.
     ///
-    /// A managed mesh has started once its spawn returns. A data mesh asks each
-    /// rank's proc for the actor's status until it starts, and fails if the
-    /// actor, or the local supervisor proxy for its rank, reaches a terminal
-    /// status first. Once a data mesh has started, later calls return
-    /// immediately.
+    /// Each rank's proc is asked for the actor's status until it starts. The
+    /// wait fails if the actor, or the local supervisor proxy for its rank,
+    /// reaches a terminal status first, or if stop was requested before startup
+    /// was confirmed. Once startup is confirmed, later calls return immediately.
     pub async fn wait_started(&self, cx: &impl context::Actor) -> crate::Result<()> {
-        let ActorMeshLifecycle::Data {
-            stop_handles,
-            started,
-            ..
-        } = &self.lifecycle
-        else {
-            return Ok(());
-        };
-        if started.get().is_some() {
+        if self.started.get().is_some() {
             return Ok(());
         }
-        let waits: Vec<_> = stop_handles
+        if self.stop_requested.get().is_some() {
+            return Err(Error::ActorSpawnError {
+                statuses: (
+                    0..self.current_ref.region().num_ranks(),
+                    resource::Status::Stopping,
+                )
+                    .into(),
+            });
+        }
+        let waits: Vec<_> = self
+            .stop_handles
             .iter()
             .enumerate()
             .map(|(rank, proxy)| {
@@ -454,8 +513,62 @@ impl<A: Referable> ActorMesh<A> {
             .buffer_unordered(num_waits)
             .try_collect::<Vec<()>>()
             .await?;
-        let _ = started.set(());
+        let _ = self.started.set(());
         Ok(())
+    }
+
+    /// Return a ref to this mesh as an [`ActorMeshRef`].
+    pub fn actor_mesh_ref(&self) -> ActorMeshRef<A> {
+        ActorMeshRef::Data(self.current_ref.clone())
+    }
+}
+
+fn stop_actor_handles(handles: &[ActorMeshStopHandle], reason: &str) {
+    for handle in handles {
+        let _ = handle.stop(reason);
+    }
+}
+
+impl<A: Referable> fmt::Debug for DataActorMesh<A> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DataActorMesh")
+            .field("current_ref", &self.current_ref)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<A: Referable> fmt::Display for DataActorMesh<A> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self.current_ref)
+    }
+}
+
+impl<A: Referable> Deref for DataActorMesh<A> {
+    type Target = DataActorMeshRef<A>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.current_ref
+    }
+}
+
+impl<A: Referable> Clone for DataActorMesh<A> {
+    fn clone(&self) -> Self {
+        Self {
+            current_ref: self.current_ref.clone(),
+            stop_handles: self.stop_handles.clone(),
+            stop_requested: Arc::clone(&self.stop_requested),
+            started: Arc::clone(&self.started),
+        }
+    }
+}
+
+impl<A: Referable> Drop for DataActorMesh<A> {
+    fn drop(&mut self) {
+        tracing::info!(
+            name = "ActorMeshStatus",
+            actor_name = %self.current_ref.id(),
+            status = "Dropped",
+        );
     }
 }
 
@@ -553,6 +666,10 @@ impl<A: Referable> Clone for ActorMesh<A> {
 
 impl<A: Referable> Drop for ActorMesh<A> {
     fn drop(&mut self) {
+        // A data mesh logs its own drop.
+        if matches!(self.lifecycle, ActorMeshLifecycle::Data(_)) {
+            return;
+        }
         tracing::info!(
             name = "ActorMeshStatus",
             actor_name = %self.id(),
@@ -561,7 +678,7 @@ impl<A: Referable> Drop for ActorMesh<A> {
     }
 }
 
-impl<A: Referable> DataActorMesh<A> {
+impl<A: Referable> DataActorMeshRef<A> {
     fn new_unchecked(id: ActorMeshId, members: ValueMesh<ActorRef<A>>) -> Self {
         Self::with_cast_domain_config(
             id,
@@ -692,7 +809,7 @@ impl<A: Referable> DataActorMesh<A> {
             cx.instance().self_addr().clone(),
         );
         // TODO: Fix cast-domain routing for multiple nonterminal hops on one
-        // proc before supporting co-located DataActorMesh members (D119701912).
+        // proc before supporting co-located DataActorMeshRef members (D119701912).
         self.cast_domain
             .ensure_materialized(cx, &headers)
             .and_then(|domain| {
@@ -731,6 +848,38 @@ impl<A: Referable> DataActorMesh<A> {
         actor.post_with_headers(cx, caller_headers, message);
     }
 
+    /// Create a new, independent monitor over every member.
+    pub fn monitor(&self, cx: &impl context::Actor) -> MeshMonitor {
+        MeshMonitor::spawn_persistent(cx, monitored_actors(self))
+            .with_mesh_id(self.id.clone())
+            .with_display_names(self.member_display_names())
+            .expect("display names must share the monitored region")
+    }
+
+    /// Wait for the next failure observed on this mesh by this context's
+    /// shared monitor.
+    pub async fn next_supervision_event(&self, cx: &impl context::Actor) -> MeshFailure {
+        let monitor = self.shared_monitor(cx);
+        let _activation = monitor.activate(cx);
+        (&*monitor).await
+    }
+
+    /// Return this context's shared dormant monitor.
+    fn shared_monitor(&self, cx: &impl context::Actor) -> Arc<MeshMonitor> {
+        self.monitor
+            .entry(cx)
+            .or_insert_with(|| {
+                Arc::new(
+                    MeshMonitor::spawn_dormant(cx, monitored_actors(self))
+                        .with_mesh_id(self.id.clone())
+                        .with_display_names(self.member_display_names())
+                        .expect("display names must share the monitored region"),
+                )
+            })
+            .get()
+            .clone()
+    }
+
     /// Record a sent message in telemetry.
     fn emit_sent_message_telemetry(
         &self,
@@ -744,6 +893,90 @@ impl<A: Referable> DataActorMesh<A> {
             region,
             headers,
         );
+    }
+}
+
+impl DataActorMeshRef<SpawnActor> {
+    /// Spawn one actor per spawner rank, all identified by `actor_mesh_id`.
+    /// `supervision_display_name` names the actors in supervision events; it
+    /// defaults to the mesh id.
+    ///
+    /// This only schedules a local supervisor per rank that posts a one-way
+    /// spawn request; it does not wait for any actor to start. The returned
+    /// mesh is usable immediately, because each proc queues messages for its
+    /// actor until the actor starts; use [`DataActorMesh::wait_started`] to
+    /// wait. If a request cannot be initiated, every supervisor created so far
+    /// receives a best-effort stop.
+    pub fn spawn<A: RemoteSpawn>(
+        &self,
+        cx: &impl context::Actor,
+        actor_mesh_id: ActorMeshId,
+        params: &A::Params,
+        supervision_display_name: Option<String>,
+    ) -> crate::Result<DataActorMesh<A>>
+    where
+        A::Params: RemoteMessage,
+    {
+        let region = self.region().clone();
+        if region.num_ranks() == 0 {
+            return Err(Error::ConfigurationError(anyhow::anyhow!(
+                "cannot spawn an empty actor mesh"
+            )));
+        }
+        let serialized_params = SerializedParams::<A>::new(params)?;
+        let (liveness, options) = data_mesh_supervision();
+        let display_name = DataMeshDisplayName::new(
+            supervision_display_name.unwrap_or_else(|| actor_mesh_id.to_string()),
+            region.clone(),
+        );
+
+        let mut members = Vec::with_capacity(region.num_ranks());
+        let mut stop_handles = Vec::with_capacity(region.num_ranks());
+        for (rank, spawner) in self.values().enumerate() {
+            let point = region
+                .extent()
+                .point_of_rank(rank)
+                .expect("spawner mesh rank must have a point");
+            let mut environment = cx.instance().actor_environment().clone();
+            if let Err(error) = environment.set(CAST_POINT, point.clone()) {
+                stop_actor_handles(&stop_handles, "data mesh spawn failed");
+                return Err(Error::Other(error.into()));
+            }
+            // The actor's own environment carries its point, but supervision
+            // events are raised on the spawner's side, so they need a copy.
+            // TODO: unify the actor environment and supervision labels.
+            let actor_display_name = display_name.at_point(&point);
+            let mut labels = Flattrs::new();
+            labels.set(CAST_POINT, point);
+            labels.set(ACTOR_MESH_ID, actor_mesh_id.clone());
+            let (actor_ref, stop_handle) = match spawner.spawn_uid_with_link_and_ready(
+                cx,
+                actor_mesh_id.uid().clone(),
+                serialized_params.clone(),
+                liveness.clone(),
+                options.clone(),
+                None,
+                environment,
+                labels,
+                Some(actor_display_name),
+            ) {
+                Ok(spawned) => spawned,
+                Err(error) => {
+                    stop_actor_handles(&stop_handles, "data mesh spawn failed");
+                    return Err(Error::Other(error));
+                }
+            };
+            members.push(actor_ref);
+            stop_handles.push(stop_handle.into_any());
+        }
+
+        DataActorMesh::try_new(actor_mesh_id, region, members, stop_handles, display_name)
+    }
+
+    /// Iterate over the spawners' proc addresses in rank order.
+    pub fn proc_addrs(&self) -> impl Iterator<Item = ProcAddr> + '_ {
+        self.values()
+            .map(|spawner| spawner.actor_addr().proc_addr())
     }
 }
 
@@ -797,7 +1030,7 @@ fn notify_sent_message(
     });
 }
 
-impl<A: Referable> Clone for DataActorMesh<A> {
+impl<A: Referable> Clone for DataActorMeshRef<A> {
     fn clone(&self) -> Self {
         Self {
             id: self.id.clone(),
@@ -812,7 +1045,7 @@ impl<A: Referable> Clone for DataActorMesh<A> {
     }
 }
 
-impl<A: Referable> Serialize for DataActorMesh<A> {
+impl<A: Referable> Serialize for DataActorMeshRef<A> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -831,7 +1064,7 @@ impl<A: Referable> Serialize for DataActorMesh<A> {
     }
 }
 
-impl<'de, A: Referable> Deserialize<'de> for DataActorMesh<A> {
+impl<'de, A: Referable> Deserialize<'de> for DataActorMeshRef<A> {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
@@ -848,7 +1081,7 @@ impl<'de, A: Referable> Deserialize<'de> for DataActorMesh<A> {
     }
 }
 
-impl<A: Referable> view::Ranked for DataActorMesh<A> {
+impl<A: Referable> view::Ranked for DataActorMeshRef<A> {
     type Item = ActorRef<A>;
 
     fn region(&self) -> &Region {
@@ -860,7 +1093,7 @@ impl<A: Referable> view::Ranked for DataActorMesh<A> {
     }
 }
 
-impl<A: Referable> view::RankedSliceable for DataActorMesh<A> {
+impl<A: Referable> view::RankedSliceable for DataActorMeshRef<A> {
     fn sliced(&self, region: Region) -> Self {
         Self::with_cast_domain_config(
             self.id.clone(),
@@ -883,7 +1116,7 @@ pub enum ActorMeshRef<A: Referable> {
     // Boxed to keep the enum size bounded by the `Data` representation
     // (`clippy::large_enum_variant`).
     Managed(Box<ManagedActorMeshRef<A>>),
-    Data(DataActorMesh<A>),
+    Data(DataActorMeshRef<A>),
 }
 
 // Serde representation for `ActorMeshRef`, tagged by variant. Manual (via this
@@ -902,7 +1135,7 @@ enum ActorMeshRefRepr<A: Referable> {
             ActorMeshCastDomain,
         )>,
     ),
-    Data(DataActorMesh<A>),
+    Data(DataActorMeshRef<A>),
 }
 
 impl<A: Referable> ActorMeshRef<A> {
@@ -930,7 +1163,7 @@ impl<A: Referable> ActorMeshRef<A> {
         region: Region,
         members: Vec<ActorRef<A>>,
     ) -> crate::Result<Self> {
-        Ok(Self::Data(DataActorMesh::try_new(id, region, members)?))
+        Ok(Self::Data(DataActorMeshRef::try_new(id, region, members)?))
     }
 
     /// Return the legacy dense ref when this is the managed variant.
@@ -1014,36 +1247,8 @@ impl<A: Referable> ActorMeshRef<A> {
     ) -> Result<MeshFailure, anyhow::Error> {
         match self {
             Self::Managed(managed) => managed.next_supervision_event(cx).await,
-            Self::Data(_) => {
-                let monitor = self
-                    .data_monitor(cx)
-                    .expect("data actor meshes have a monitor");
-                let _activation = monitor.activate(cx);
-                Ok((&*monitor).await)
-            }
+            Self::Data(data) => Ok(data.next_supervision_event(cx).await),
         }
-    }
-
-    /// Return this context's shared dormant monitor for a data actor mesh, or
-    /// `None` for a managed one.
-    fn data_monitor(&self, cx: &impl context::Actor) -> Option<Arc<MeshMonitor>> {
-        let Self::Data(data) = self else {
-            return None;
-        };
-        Some(
-            data.monitor
-                .entry(cx)
-                .or_insert_with(|| {
-                    Arc::new(
-                        MeshMonitor::spawn_dormant(cx, self.monitored_actors())
-                            .with_mesh_id(self.id().clone())
-                            .with_display_names(data.member_display_names())
-                            .expect("display names must share the monitored region"),
-                    )
-                })
-                .get()
-                .clone(),
-        )
     }
 
     /// See [`ManagedActorMeshRef::clone_with_supervision_receiver`].
@@ -1062,25 +1267,28 @@ impl<A: Referable> ActorMeshRef<A> {
 
     /// Create a new, independent monitor over every rank.
     pub fn monitor(&self, cx: &impl context::Actor) -> MeshMonitor {
-        let display_names = match self {
-            Self::Managed(_) => None,
-            Self::Data(data) => data.member_display_names(),
-        };
-        MeshMonitor::spawn_persistent(cx, self.monitored_actors())
-            .with_mesh_id(self.id().clone())
-            .with_display_names(display_names)
-            .expect("display names must share the monitored region")
+        match self {
+            Self::Managed(_) => MeshMonitor::spawn_persistent(cx, monitored_actors(self))
+                .with_mesh_id(self.id().clone()),
+            Self::Data(data) => data.monitor(cx),
+        }
     }
+}
 
-    fn monitored_actors(&self) -> ValueMesh<ActorAddr> {
-        let region = self.region().clone();
-        let actors = self
-            .values()
-            .map(|actor| actor.actor_addr().clone())
-            .collect();
-        ValueMesh::new(region, actors)
-            .expect("actor addresses collected from a dense mesh preserve cardinality")
-    }
+fn monitored_actors<A: Referable>(
+    mesh: &impl view::Ranked<Item = ActorRef<A>>,
+) -> ValueMesh<ActorAddr> {
+    let region = mesh.region().clone();
+    let actors = (0..region.num_ranks())
+        .map(|rank| {
+            mesh.get(rank)
+                .expect("dense mesh has a member per rank")
+                .actor_addr()
+                .clone()
+        })
+        .collect();
+    ValueMesh::new(region, actors)
+        .expect("actor addresses collected from a dense mesh preserve cardinality")
 }
 
 impl<A: Referable> Clone for ActorMeshRef<A> {
@@ -1202,14 +1410,14 @@ impl<A: Referable> view::RankedSliceable for ActorMeshRef<A> {
     }
 }
 
-impl<A: Referable> PartialEq for DataActorMesh<A> {
+impl<A: Referable> PartialEq for DataActorMeshRef<A> {
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id && self.members == other.members
     }
 }
-impl<A: Referable> Eq for DataActorMesh<A> {}
+impl<A: Referable> Eq for DataActorMeshRef<A> {}
 
-impl<A: Referable> Hash for DataActorMesh<A> {
+impl<A: Referable> Hash for DataActorMeshRef<A> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.id.hash(state);
         self.members.hash(state);
@@ -2170,6 +2378,7 @@ mod tests {
     use std::sync::Arc;
 
     use async_trait::async_trait;
+    use hyperactor::ActorAddr;
     use hyperactor::ActorRef;
     use hyperactor::Endpoint as _;
     use hyperactor::Gateway;
@@ -2190,9 +2399,12 @@ mod tests {
     use hyperactor::mailbox::PortHandle;
     use hyperactor::mailbox::Undeliverable;
     use hyperactor::supervision::ActorSupervisionEvent;
+    use hyperactor::supervision::SupervisionObservation;
     use hyperactor_cast::TilingPolicy;
     use hyperactor_cast::cast_actor::CastDestination;
     use hyperactor_cast::cast_actor::CastDomainId;
+    use hyperactor_remote::ActorSpawner;
+    use hyperactor_remote::actor_spawner::SpawnActor;
     use ndslice::Extent;
     use ndslice::Region;
     use ndslice::Slice;
@@ -2207,9 +2419,12 @@ mod tests {
 
     use super::ActorMesh;
     use super::DataActorMesh;
+    use super::DataActorMeshRef;
     use crate::ActorMeshRef;
     use crate::ProcMesh;
     use crate::ValueMesh;
+    use crate::actor_mesh::ACTOR_MESH_ID;
+    use crate::casting::CAST_POINT;
     use crate::host_mesh::GET_PROC_STATE_MAX_IDLE;
     use crate::host_mesh::PROC_SPAWN_MAX_IDLE;
     use crate::mesh_controller::ActorMeshControlPlane;
@@ -2388,6 +2603,103 @@ mod tests {
         ));
     }
 
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_spawner_mesh_spawns_without_waiting_and_stops() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let actor_spawner = client.spawn(ActorSpawner);
+        let spawners = DataActorMeshRef::<SpawnActor>::try_new(
+            ActorMeshId::singleton(Label::strip("spawners")),
+            extent!(procs = 1).into(),
+            vec![actor_spawner.bind::<SpawnActor>()],
+        )
+        .expect("spawner mesh should be valid");
+        assert_eq!(
+            spawners.proc_addrs().collect::<Vec<_>>(),
+            vec![proc.proc_addr()]
+        );
+
+        let id = ActorMeshId::singleton(Label::strip("service"));
+        let mut actors: DataActorMesh<testactor::TestActor> = spawners
+            .spawn(&client, id.clone(), &(), None)
+            .expect("spawner mesh should spawn an actor mesh");
+        assert_eq!(actors.id(), &id);
+
+        // The spawn returned before the actor started, so this cast is queued
+        // behind the spawn request.
+        let (reply, mut replies) = mailbox::open_port(&client);
+        actors
+            .cast(&client, testactor::GetActorId(reply.bind()))
+            .expect("cast should reach the spawned mesh");
+        let (actor_addr, _) = tokio::time::timeout(Duration::from_secs(5), replies.recv())
+            .await
+            .expect("timed out waiting for actor reply")
+            .expect("actor reply port should remain open");
+        assert_eq!(actor_addr.id().uid(), id.uid());
+        actors
+            .wait_started(&client)
+            .await
+            .expect("spawned mesh should start");
+
+        let clone = actors.clone();
+        actors.stop("test complete".to_string());
+        actors.wait_for_terminal(&client).await;
+        for mesh in [&actors, &clone, &actors.clone()] {
+            mesh.wait_started(&client)
+                .await
+                .expect("confirmed startup should remain successful after stop");
+        }
+        actor_spawner
+            .drain_and_stop("test complete")
+            .expect("actor spawner should accept stop");
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_spawner_mesh_wait_started_after_stop_fails() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let actor_spawner = client.spawn(ActorSpawner);
+        let spawners = DataActorMeshRef::<SpawnActor>::try_new(
+            ActorMeshId::singleton(Label::strip("spawners")),
+            extent!(procs = 1).into(),
+            vec![actor_spawner.bind::<SpawnActor>()],
+        )
+        .expect("spawner mesh should be valid");
+        let (entered, mut entering) = client.open_port();
+        let mut actors: DataActorMesh<testactor::GatedInitActor> = spawners
+            .spawn(
+                &client,
+                ActorMeshId::instance(Label::strip("gated")),
+                &entered.bind(),
+                None,
+            )
+            .expect("spawner mesh should spawn an actor mesh");
+        let release = entering.recv().await.expect("actor should enter init");
+
+        let clone = actors.clone();
+        actors.stop("test complete".to_string());
+        for mesh in [&actors, &clone, &actors.clone()] {
+            let error = mesh
+                .wait_started(&client)
+                .await
+                .expect_err("stopping before init completes must fail startup for every clone");
+            let crate::Error::ActorSpawnError { statuses } = error else {
+                panic!("expected startup failure, got {error}");
+            };
+            assert_eq!(
+                statuses,
+                (0..1, resource::Status::Stopping).into(),
+                "startup failure should identify the stopped rank"
+            );
+        }
+
+        release.post(&client, ());
+        actors.wait_for_terminal(&client).await;
+        actor_spawner
+            .drain_and_stop("test complete")
+            .expect("actor spawner should accept stop");
+    }
+
     #[test]
     fn test_actor_mesh_ref_data_variant_is_detached_data_structure() {
         let region: Region = extent!(replicas = 2).into();
@@ -2484,7 +2796,7 @@ mod tests {
             ],
         )
         .expect("member mesh should be valid");
-        let data = DataActorMesh::with_cast_domain_config(
+        let data = DataActorMeshRef::with_cast_domain_config(
             ActorMeshId::instance(Label::new("data").unwrap()),
             members,
             CastDomainId::new(),
@@ -2526,9 +2838,10 @@ mod tests {
         // slice is dropped.
         for _ in 0..20 {
             let slice = mesh.sliced(region.clone());
-            let monitor = slice
-                .data_monitor(&sender.instance)
-                .expect("data mesh has a monitor");
+            let ActorMeshRef::Data(data) = &slice else {
+                panic!("data mesh has a monitor");
+            };
+            let monitor = data.shared_monitor(&sender.instance);
             let activation = monitor.activate(&sender.instance);
             tokio::task::yield_now().await;
             drop(activation);
@@ -2847,13 +3160,25 @@ mod tests {
         let _ = hm.shutdown(instance).await;
     }
 
+    /// The actor a supervision event is about. A data mesh owner receives the
+    /// wrapper frames of the actor's local supervisor proxy, so this is the lost
+    /// link's target or the innermost cause.
+    fn failed_actor(event: &ActorSupervisionEvent) -> &ActorAddr {
+        match &event.observation {
+            Some(
+                SupervisionObservation::LinkLost(target)
+                | SupervisionObservation::ProcLinkLost(target),
+            ) => &target.actor_id,
+            _ => &event.caused_by().actor_id,
+        }
+    }
+
     #[async_timed_test(timeout_secs = 300)]
     async fn test_actor_states_with_panic() {
         hyperactor_telemetry::initialize_logging_for_test();
 
         let instance = testing::instance();
         let config = hyperactor_config::global::lock();
-        let _mode = config.override_key(USE_DIRECT_SPAWN, false);
         let _proc_spawn = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(120));
         let _actor_spawn = config.override_key(ACTOR_SPAWN_MAX_IDLE, Duration::from_secs(120));
         let _host_spawn = config.override_key(
@@ -2862,7 +3187,8 @@ mod tests {
         );
 
         // Listen for supervision events sent to the parent instance.
-        let (supervision_port, mut supervision_receiver) = instance.open_port::<MeshFailure>();
+        let (supervision_port, mut supervision_receiver) =
+            instance.open_port::<ActorSupervisionEvent>();
         let supervisor = supervision_port.bind();
         let num_replicas = 1;
         let mut hm = testing::host_mesh(num_replicas).await;
@@ -2872,8 +3198,6 @@ mod tests {
             .unwrap();
         let child_name = ActorMeshId::instance(Label::new("child").unwrap());
 
-        // Need to use a wrapper as there's no way to customize the handler for MeshFailure
-        // on the client instance. The client would just panic with the message.
         let actor_mesh: ActorMesh<testactor::WrapperActor> = proc_mesh
             .spawn(
                 instance,
@@ -2915,36 +3239,35 @@ mod tests {
             .await
             .unwrap()
             .expect("no supervision event found on ref from wrapper actor");
-        let check_failure = move |failure: MeshFailure| {
-            assert_eq!(failure.actor_mesh_name, Some(child_name.to_string()));
+        assert_eq!(failure.actor_mesh_name, Some(child_name.to_string()));
+        assert_eq!(failure.crashed_ranks, vec![0]);
+        let check_event = |event: &ActorSupervisionEvent| {
             assert!(
-                failure
-                    .event
-                    .actor_id
+                failed_actor(event)
                     .label()
                     .unwrap()
                     .as_str()
                     .starts_with(child_name.label().unwrap().as_str())
             );
-            if let ActorStatus::Failed(ActorErrorKind::Generic(msg)) = &failure.event.actor_status {
+            let cause = event.caused_by();
+            if let ActorStatus::Failed(ActorErrorKind::Generic(msg)) = &cause.actor_status {
                 assert!(msg.contains("panic"), "{}", msg);
                 assert!(msg.contains("for testing"), "{}", msg);
             } else {
-                panic!("actor status is not failed: {}", failure.event.actor_status);
+                panic!("actor status is not failed: {}", cause.actor_status);
             }
         };
-        check_failure(failure);
-
-        // The wrapper actor should *not* have an event.
+        check_event(&failure.event);
 
         // Wait for a supervision event to reach the wrapper actor.
         for _ in 0..num_replicas {
-            let failure =
-                tokio::time::timeout(Duration::from_secs(20), supervision_receiver.recv())
-                    .await
-                    .expect("timeout")
-                    .unwrap();
-            check_failure(failure);
+            let event = tokio::time::timeout(Duration::from_secs(20), supervision_receiver.recv())
+                .await
+                .expect("timeout")
+                .unwrap();
+            assert_eq!(event.labels.get(ACTOR_MESH_ID), Some(child_name.clone()));
+            assert_eq!(event.labels.get(CAST_POINT).unwrap().rank(), 0);
+            check_event(&event);
         }
 
         // The failed child does not prevent new spawns on the same proc.
@@ -2971,7 +3294,10 @@ mod tests {
         hyperactor_telemetry::initialize_logging_for_test();
 
         let config = hyperactor_config::global::lock();
-        let _mode = config.override_key(USE_DIRECT_SPAWN, false);
+        let _detection = config.override_key(
+            crate::proc_mesh::DATA_SUPERVISION_TIMEOUT,
+            Duration::from_secs(2),
+        );
         let _poll = config.override_key(SUPERVISION_POLL_FREQUENCY, Duration::from_secs(1));
         let _guard = config.override_key(GET_ACTOR_STATE_MAX_IDLE, Duration::from_secs(1));
         let _proc_guard = config.override_key(GET_PROC_STATE_MAX_IDLE, Duration::from_secs(1));
@@ -2983,7 +3309,8 @@ mod tests {
 
         let instance = testing::instance();
         // Listen for supervision events sent to the parent instance.
-        let (supervision_port, mut supervision_receiver) = instance.open_port::<MeshFailure>();
+        let (supervision_port, mut supervision_receiver) =
+            instance.open_port::<ActorSupervisionEvent>();
         let supervisor = supervision_port.bind();
         let num_replicas = 1;
         let mut hm = testing::host_mesh(num_replicas).await;
@@ -2998,8 +3325,6 @@ mod tests {
             .unwrap();
         let child_name = ActorMeshId::instance(Label::new("child").unwrap());
 
-        // Need to use a wrapper as there's no way to customize the handler for MeshFailure
-        // on the client instance. The client would just panic with the message.
         let actor_mesh: ActorMesh<testactor::WrapperActor> = proc_mesh
             .spawn(
                 instance,
@@ -3039,33 +3364,34 @@ mod tests {
             .unwrap()
             .expect("no supervision event found on ref from wrapper actor");
 
-        let check_failure = move |failure: MeshFailure| {
-            assert_eq!(failure.actor_mesh_name, Some(child_name.to_string()));
+        assert_eq!(failure.actor_mesh_name, Some(child_name.to_string()));
+        assert_eq!(failure.crashed_ranks, vec![0]);
+        let check_event = |event: &ActorSupervisionEvent| {
             assert!(
-                failure
-                    .event
-                    .actor_id
+                failed_actor(event)
                     .label()
                     .unwrap()
                     .as_str()
                     .starts_with(child_name.label().unwrap().as_str())
             );
-            if let ActorStatus::Failed(ActorErrorKind::Generic(msg)) = &failure.event.actor_status {
+            let cause = event.caused_by();
+            if let ActorStatus::Failed(ActorErrorKind::Generic(msg)) = &cause.actor_status {
                 assert!(msg.contains("exited with non-zero code 1"), "{}", msg);
             } else {
-                panic!("actor status is not failed: {}", failure.event.actor_status);
+                panic!("actor status is not failed: {}", cause.actor_status);
             }
         };
-        check_failure(failure);
+        check_event(&failure.event);
 
         // Wait for a supervision event to occur on these actors.
         for _ in 0..num_replicas {
-            let failure =
-                tokio::time::timeout(Duration::from_secs(20), supervision_receiver.recv())
-                    .await
-                    .expect("timeout")
-                    .unwrap();
-            check_failure(failure);
+            let event = tokio::time::timeout(Duration::from_secs(20), supervision_receiver.recv())
+                .await
+                .expect("timeout")
+                .unwrap();
+            assert_eq!(event.labels.get(ACTOR_MESH_ID), Some(child_name.clone()));
+            assert_eq!(event.labels.get(CAST_POINT).unwrap().rank(), 0);
+            check_event(&event);
         }
 
         let _ = second_hm.shutdown(instance).await;
@@ -3078,7 +3404,8 @@ mod tests {
 
         let instance = testing::instance();
         // Listen for supervision events sent to the parent instance.
-        let (supervision_port, mut supervision_receiver) = instance.open_port::<MeshFailure>();
+        let (supervision_port, mut supervision_receiver) =
+            instance.open_port::<ActorSupervisionEvent>();
         let supervisor = supervision_port.bind();
         let (mut hm, _actor_mesh, sliced, sliced_replicas, child_name) = {
             let config = hyperactor_config::global::lock();
@@ -3131,7 +3458,7 @@ mod tests {
                     .await
                     .expect("timeout")
                     .unwrap();
-            let event = supervision_message.event;
+            let event = supervision_message;
             assert!(
                 event
                     .actor_id
