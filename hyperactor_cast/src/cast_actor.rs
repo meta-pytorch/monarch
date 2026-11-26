@@ -977,7 +977,7 @@ impl Handler<CreateCastDomain> for CastActor {
             .clone();
 
         anyhow::ensure!(
-            root_node.cast_actor.actor_addr() == cx.self_addr(),
+            root_node.cast_actor.actor_addr().id() == cx.self_addr().id(),
             "CastActor received a routing tile for a different relay"
         );
 
