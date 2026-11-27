@@ -645,7 +645,7 @@ fn bootstrap_host(
     signal_safe_block_on(py, async move {
         // Pass the via address into `host` so the gateway's `serve_via`
         // attach runs *after* the host's own frontend serve but *before*
-        // any proc or actor ref is minted. That ordering makes the via
+        // any actor ref is minted. That ordering makes the via
         // session the newest active serve, so refs advertise the
         // routable `Via` location and out-of-cluster return traffic
         // flows back over the duplex. The host owns the resulting serve
