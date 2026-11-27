@@ -1286,6 +1286,26 @@ pub(crate) fn normalize_host(host: &str) -> String {
     }
 }
 
+/// An error parsing a channel or actor address for dialing.
+#[derive(Debug, thiserror::Error)]
+pub enum DialAddrParseError {
+    /// The location contains a listener setting.
+    #[error("bind-only location: {0}")]
+    BindOnly(&'static str),
+    /// The channel URL uses an unknown scheme.
+    #[error("unsupported ZMQ scheme: {0}")]
+    UnsupportedScheme(String),
+    /// The address could not be parsed.
+    #[error(transparent)]
+    Malformed(#[from] anyhow::Error),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ZmqAddrPurpose {
+    Listen,
+    Dial,
+}
+
 impl ChannelAddr {
     /// Return the canonical address that remote peers should dial.
     ///
@@ -1320,6 +1340,22 @@ impl ChannelAddr {
         Ok(addr)
     }
 
+    pub(crate) fn from_zmq_dial_url(address: &str) -> Result<Self, DialAddrParseError> {
+        let (addr, _) = Self::parse_zmq_url(address, ZmqAddrPurpose::Dial)?;
+        let unspecified = match &addr {
+            Self::Tcp(addr) => addr.ip().is_unspecified(),
+            Self::MetaTls(addr) | Self::Tls(addr) | Self::Quic(addr) | Self::MetaQuic(addr) => addr
+                .hostname
+                .parse::<IpAddr>()
+                .is_ok_and(|ip| ip.is_unspecified()),
+            _ => false,
+        };
+        if unspecified {
+            return Err(DialAddrParseError::BindOnly("unspecified host"));
+        }
+        Ok(addr)
+    }
+
     /// Parse ZMQ-style URL format, with support for pre-opened file descriptors.
     ///
     /// When the port portion of a URL is `fdNNN` (e.g. `tcp://myhost:fd5`),
@@ -1335,12 +1371,25 @@ impl ChannelAddr {
     pub fn from_zmq_url_with_listener(
         address: &str,
     ) -> Result<(Self, Option<std::net::TcpListener>), anyhow::Error> {
+        Self::parse_zmq_url(address, ZmqAddrPurpose::Listen).map_err(|error| match error {
+            DialAddrParseError::Malformed(error) => error,
+            error => error.into(),
+        })
+    }
+
+    fn parse_zmq_url(
+        address: &str,
+        purpose: ZmqAddrPurpose,
+    ) -> Result<(Self, Option<std::net::TcpListener>), DialAddrParseError> {
         // Check for Alias format: dial_to_url@bind_to_url
         // The @ character separates two valid ZMQ URLs.
         if let Some(at_pos) = address
             .find('@')
             .filter(|&pos| address[..pos].starts_with("tcp://"))
         {
+            if purpose == ZmqAddrPurpose::Dial {
+                return Err(DialAddrParseError::BindOnly("tcp alias"));
+            }
             let dial_to_str = &address[..at_pos];
             let bind_to_str = &address[at_pos + 1..];
 
@@ -1349,13 +1398,15 @@ impl ChannelAddr {
                 return Err(anyhow::anyhow!(
                     "alias format is only supported for TCP addresses, got dial_to: {}",
                     dial_to_str
-                ));
+                )
+                .into());
             }
             if !bind_to_str.starts_with("tcp://") {
                 return Err(anyhow::anyhow!(
                     "alias format is only supported for TCP addresses, got bind_to: {}",
                     bind_to_str
-                ));
+                )
+                .into());
             }
 
             let dial_to = Self::from_zmq_url(dial_to_str)?;
@@ -1377,7 +1428,7 @@ impl ChannelAddr {
 
         match scheme {
             "tcp" => {
-                let (host, port, listener) = Self::parse_host_port_or_fd(address)?;
+                let (host, port, listener) = Self::parse_host_port_or_fd(address, purpose)?;
                 let socket_addr = if host == "*" {
                     SocketAddr::new("::".parse().unwrap(), port)
                 } else {
@@ -1389,12 +1440,38 @@ impl ChannelAddr {
                 let port = address.parse::<u64>().map_err(|_| {
                     anyhow::anyhow!("inproc endpoint must be a valid port number: {}", address)
                 })?;
+                if purpose == ZmqAddrPurpose::Dial && port == 0 {
+                    return Err(DialAddrParseError::BindOnly("local port 0"));
+                }
                 Ok((Self::Local(port), None))
             }
+            "ipc" if purpose == ZmqAddrPurpose::Dial && address.is_empty() => {
+                Err(DialAddrParseError::BindOnly("automatic Unix socket name"))
+            }
             "ipc" => Ok((Self::Unix(net::unix::SocketAddr::from_str(address)?), None)),
-            "vsock" => Ok((Self::Vsock(VsockAddr::from_str(address)?), None)),
+            "vsock" => {
+                let addr = VsockAddr::from_str(address)?;
+                if purpose == ZmqAddrPurpose::Dial
+                    && matches!(
+                        &addr,
+                        VsockAddr::Native {
+                            cid: VsockAddr::CID_ANY,
+                            ..
+                        } | VsockAddr::Native {
+                            port: VsockAddr::PORT_ANY,
+                            ..
+                        } | VsockAddr::Hybrid {
+                            port: VsockAddr::PORT_ANY,
+                            ..
+                        }
+                    )
+                {
+                    return Err(DialAddrParseError::BindOnly("wildcard vsock endpoint"));
+                }
+                Ok((Self::Vsock(addr), None))
+            }
             "metatls" | "tls" | "quic" | "metaquic" => {
-                let (host, port, listener) = Self::parse_host_port_or_fd(address)?;
+                let (host, port, listener) = Self::parse_host_port_or_fd(address, purpose)?;
                 let hostname = if host == "*" {
                     std::net::Ipv6Addr::UNSPECIFIED.to_string()
                 } else {
@@ -1408,7 +1485,7 @@ impl ChannelAddr {
                 };
                 Ok((addr, listener))
             }
-            scheme => Err(anyhow::anyhow!("unsupported ZMQ scheme: {}", scheme)),
+            scheme => Err(DialAddrParseError::UnsupportedScheme(scheme.to_string())),
         }
     }
 
@@ -1416,12 +1493,19 @@ impl ChannelAddr {
     /// referencing a pre-opened file descriptor. Returns (host, resolved_port, optional_listener).
     fn parse_host_port_or_fd(
         address: &str,
-    ) -> Result<(&str, u16, Option<std::net::TcpListener>), anyhow::Error> {
+        purpose: ZmqAddrPurpose,
+    ) -> Result<(&str, u16, Option<std::net::TcpListener>), DialAddrParseError> {
         let (host, port_str) = address
             .rsplit_once(':')
             .ok_or_else(|| anyhow::anyhow!("invalid address format: {}", address))?;
+        if purpose == ZmqAddrPurpose::Dial && host.is_empty() {
+            return Err(anyhow::anyhow!("expected host:port").into());
+        }
 
         if let Some(fd_str) = port_str.strip_prefix("fd") {
+            if purpose == ZmqAddrPurpose::Dial {
+                return Err(DialAddrParseError::BindOnly("listener file descriptor"));
+            }
             let fd_num: RawFd = fd_str
                 .parse()
                 .map_err(|_| anyhow::anyhow!("invalid file descriptor number: {}", port_str))?;
@@ -1429,15 +1513,30 @@ impl ChannelAddr {
             // listen() was already called, and required if only bind() was done.
             // Safety: fd_num is valid and we are about to take ownership of it.
             let borrowed = unsafe { std::os::unix::io::BorrowedFd::borrow_raw(fd_num) };
-            nix::sys::socket::listen(&borrowed, nix::sys::socket::Backlog::new(128)?)?;
+            nix::sys::socket::listen(
+                &borrowed,
+                nix::sys::socket::Backlog::new(128).map_err(anyhow::Error::from)?,
+            )
+            .map_err(anyhow::Error::from)?;
             // Safety: caller guarantees the fd is a valid bound TCP socket.
             let std_listener = unsafe { std::net::TcpListener::from_raw_fd(fd_num) };
-            let local_addr = std_listener.local_addr()?;
+            let local_addr = std_listener.local_addr().map_err(anyhow::Error::from)?;
             Ok((host, local_addr.port(), Some(std_listener)))
         } else {
+            if purpose == ZmqAddrPurpose::Dial {
+                if !port_str.bytes().all(|byte| byte.is_ascii_digit()) {
+                    return Err(anyhow::anyhow!("invalid port: {port_str}").into());
+                }
+                if host == "*" {
+                    return Err(DialAddrParseError::BindOnly("wildcard host"));
+                }
+            }
             let port: u16 = port_str
                 .parse()
                 .map_err(|_| anyhow::anyhow!("invalid port: {}", port_str))?;
+            if purpose == ZmqAddrPurpose::Dial && port == 0 {
+                return Err(DialAddrParseError::BindOnly("port 0"));
+            }
             Ok((host, port, None))
         }
     }

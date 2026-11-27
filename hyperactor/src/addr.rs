@@ -40,6 +40,7 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use crate::channel::ChannelAddr;
+use crate::channel::DialAddrParseError;
 use crate::context::MailboxExt;
 use crate::id;
 use crate::id::ActorId;
@@ -324,6 +325,15 @@ impl ActorAddr {
     /// Create a new [`ActorAddr`].
     pub fn new(id: ActorId, location: Location) -> Self {
         Self { id, location }
+    }
+
+    /// Parse an actor address for dialing, including any `Via` path.
+    ///
+    /// Rejects listener settings such as TCP aliases, inherited descriptors,
+    /// wildcard addresses, and auto-assigned ports or socket names. Parsing
+    /// can resolve TCP hostnames.
+    pub fn from_dial_str(s: &str) -> Result<Self, DialAddrParseError> {
+        parse::addr::parse_dial_actor_addr(s)
     }
 
     /// Create an ActorAddr from a ProcAddr and actor uid.

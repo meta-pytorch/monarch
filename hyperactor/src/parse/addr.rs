@@ -8,8 +8,8 @@
 
 //! Recursive-descent parsing for Hyperactor addresses.
 //!
-//! These parsers compose on top of the shared id parser and then treat the
-//! location tail after `@` as opaque input for `Location::from_str`. That
+//! These parsers compose on top of the shared id parser and then parse the
+//! location tail after `@` with the shared location grammar. That
 //! keeps URL punctuation out of the Hyperactor lexer while still giving
 //! token-aware errors at the id/address boundary.
 
@@ -19,6 +19,7 @@ use crate::addr::Location;
 use crate::addr::PortAddr;
 use crate::addr::ProcAddr;
 use crate::channel::ChannelAddr;
+use crate::channel::DialAddrParseError;
 use crate::parse::error::ParseError;
 use crate::parse::id::Parser;
 use crate::parse::id::parse_actor_id_with_parser;
@@ -44,6 +45,22 @@ pub(crate) fn parse_actor_addr(input: &str) -> Result<ActorAddr, ParseError> {
     Ok(ActorAddr::new(id, location))
 }
 
+pub(crate) fn parse_dial_actor_addr(input: &str) -> Result<ActorAddr, DialAddrParseError> {
+    let mut parser = Parser::new(input);
+    let id = parse_actor_id_with_parser(&mut parser)?;
+    let at = parser.expect_kind(TokenKind::At)?;
+    let location = parse_location_body(&mut parser, at, |url, _| {
+        ChannelAddr::from_zmq_dial_url(url)
+    })?;
+    Ok(ActorAddr::new(id, location))
+}
+
+impl From<ParseError> for DialAddrParseError {
+    fn from(error: ParseError) -> Self {
+        Self::Malformed(error.into())
+    }
+}
+
 pub(crate) fn parse_port_addr(input: &str) -> Result<PortAddr, ParseError> {
     let mut parser = Parser::new(input);
     let id = parse_port_id_with_parser(&mut parser)?;
@@ -65,18 +82,27 @@ pub(crate) fn parse_location_str(input: &str) -> Result<Location, ParseError> {
     // Synthesize an anchor token at offset 0 for `missing_location`
     // errors on empty input.
     let anchor = Token::eof(0);
-    parse_location_body(&mut parser, anchor)
+    parse_location_body(&mut parser, anchor, parse_channel)
 }
 
 fn parse_location(parser: &mut Parser<'_>) -> Result<Location, ParseError> {
     let at = parser.expect_kind(TokenKind::At)?;
-    parse_location_body(parser, at)
+    parse_location_body(parser, at, parse_channel)
 }
 
-fn parse_location_body(parser: &mut Parser<'_>, anchor: Token<'_>) -> Result<Location, ParseError> {
+fn parse_channel(url: &str, span: Span) -> Result<ChannelAddr, ParseError> {
+    ChannelAddr::from_zmq_url(url)
+        .map_err(|error| ParseError::invalid_location(span, error.to_string()))
+}
+
+fn parse_location_body<E: From<ParseError>>(
+    parser: &mut Parser<'_>,
+    anchor: Token<'_>,
+    parse_channel: impl FnOnce(&str, Span) -> Result<ChannelAddr, E>,
+) -> Result<Location, E> {
     let rest = parser.rest();
     if rest.is_empty() {
-        return Err(ParseError::missing_location(anchor));
+        return Err(ParseError::missing_location(anchor).into());
     }
 
     // The location grammar is `via* zmq-url`, where each via is the
@@ -96,8 +122,7 @@ fn parse_location_body(parser: &mut Parser<'_>, anchor: Token<'_>) -> Result<Loc
 
     let url_text = &rest[url_offset..];
     let url_span = Span::new(url_start, rest_start + rest.len());
-    let addr = ChannelAddr::from_zmq_url(url_text)
-        .map_err(|err: anyhow::Error| ParseError::invalid_location(url_span, err.to_string()))?;
+    let addr = parse_channel(url_text, url_span)?;
 
     // Parse the via prefix `(uid ".")*` with the shared combinator,
     // bounding the lexer at the sniffed URL (synthesizing an EOF
@@ -148,6 +173,114 @@ mod tests {
         let parsed = parse_actor_addr("controller.local@tcp://[::1]:2345").unwrap();
         assert_eq!(parsed.id().to_string(), "controller.local");
         assert_eq!(parsed.location().to_string(), "tcp://[::1]:2345");
+    }
+
+    #[test]
+    fn test_parse_dial_actor_addr() {
+        for address in [
+            "controller.local@tcp://[::1]:2345",
+            "controller.local@<2>.quic://localhost:2345",
+            "controller.local@inproc://7",
+            "controller.local@ipc:///tmp/hyperactor.sock",
+            "controller.local@vsock://3:2345",
+            "controller.local@vsock:///tmp/vmm.sock:2345",
+        ] {
+            assert_eq!(
+                ActorAddr::from_dial_str(address).unwrap().to_string(),
+                address
+            );
+        }
+    }
+
+    #[test]
+    fn test_dial_actor_addr_rejects_listener_settings() {
+        for location in [
+            "tcp://*:2345",
+            "tcp://0.0.0.0:2345",
+            "tcp://127.0.0.1:0",
+            "tcp://127.0.0.1:2345@tcp://0.0.0.0:2345",
+            "<2>.quic://localhost:fd",
+            "quic://[::]:2345",
+            "inproc://0",
+            "ipc://",
+            "vsock://4294967295:2345",
+            "vsock://3:4294967295",
+            "vsock:///tmp/vmm.sock:4294967295",
+        ] {
+            let address = format!("controller.local@{location}");
+            assert!(
+                matches!(
+                    ActorAddr::from_dial_str(&address),
+                    Err(DialAddrParseError::BindOnly(_))
+                ),
+                "accepted a listener setting in {address}"
+            );
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_dial_actor_addr_leaves_listener_descriptors_untouched() {
+        use std::fs;
+        use std::os::fd::AsRawFd;
+        use std::os::fd::FromRawFd;
+        use std::os::fd::IntoRawFd;
+        use std::os::fd::OwnedFd;
+        use std::os::unix::fs::MetadataExt;
+
+        use nix::sys::socket::AddressFamily;
+        use nix::sys::socket::SockFlag;
+        use nix::sys::socket::SockType;
+        use nix::sys::socket::SockaddrIn;
+        use nix::sys::socket::bind;
+        use nix::sys::socket::getsockopt;
+        use nix::sys::socket::socket;
+        use nix::sys::socket::sockopt::AcceptConn;
+
+        let socket = socket(
+            AddressFamily::Inet,
+            SockType::Stream,
+            SockFlag::SOCK_CLOEXEC,
+            None,
+        )
+        .unwrap();
+        bind(socket.as_raw_fd(), &SockaddrIn::new(127, 0, 0, 1, 0)).unwrap();
+        let original = fs::metadata(format!("/proc/self/fd/{}", socket.as_raw_fd())).unwrap();
+        assert!(!getsockopt(&socket, AcceptConn).unwrap());
+
+        for prefix in ["", "<2>.", "tcp://127.0.0.1:2345@"] {
+            let fd = socket.try_clone().unwrap().into_raw_fd();
+            let address = format!("controller.local@{prefix}tcp://127.0.0.1:fd{fd}");
+            let result = ActorAddr::from_dial_str(&address);
+            let duplicate = fs::metadata(format!("/proc/self/fd/{fd}"))
+                .expect("dial parsing must leave the descriptor open");
+            assert_eq!(
+                (duplicate.dev(), duplicate.ino()),
+                (original.dev(), original.ino()),
+                "dial parsing changed the descriptor in {address}"
+            );
+            // SAFETY: We released this duplicate with `into_raw_fd`.
+            // The device and inode identify the original socket, which this
+            // test still owns. The parse result owns no listener.
+            let _duplicate = unsafe { OwnedFd::from_raw_fd(fd) };
+            assert!(
+                !getsockopt(&socket, AcceptConn).unwrap(),
+                "dial parsing started listening for {address}"
+            );
+            assert!(matches!(result, Err(DialAddrParseError::BindOnly(_))));
+        }
+    }
+
+    #[test]
+    fn test_dial_actor_addr_distinguishes_unsupported_and_malformed_addresses() {
+        assert!(matches!(
+            ActorAddr::from_dial_str("controller.local@unknown://localhost:2345"),
+            Err(DialAddrParseError::UnsupportedScheme(scheme)) if scheme == "unknown"
+        ));
+        assert!(matches!(
+            ActorAddr::from_dial_str("controller.local@tcp://127.0.0.1:port"),
+            Err(DialAddrParseError::Malformed(_))
+        ));
     }
 
     #[test]
