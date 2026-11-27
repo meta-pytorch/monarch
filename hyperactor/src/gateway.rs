@@ -660,13 +660,14 @@ impl Gateway {
     /// address should branch on
     /// [`ChannelTransport::supports_duplex`] and use [`serve`] instead.
     pub fn serve_duplex(&self, addr: ChannelAddr) -> Result<GatewayServeHandle, ChannelError> {
-        self.serve_duplex_with_listener(addr, None)
+        self.serve_duplex_with_listener(addr, None, control::EndpointOwner::default())
     }
 
     fn serve_duplex_with_listener(
         &self,
         addr: ChannelAddr,
         listener: Option<std::net::TcpListener>,
+        endpoint_owner: control::EndpointOwner,
     ) -> Result<GatewayServeHandle, ChannelError> {
         if !addr.transport().supports_duplex() {
             return Err(ChannelError::Other(anyhow::anyhow!(
@@ -685,14 +686,18 @@ impl Gateway {
         // transport is not a kernel socket and cannot be muxed, so it
         // keeps the plain duplex accept path.
         if addr.transport().is_net() {
-            return self.serve_mux_with_listener(addr, listener);
+            return self.serve_mux_with_endpoint_owner(addr, listener, endpoint_owner);
         }
         let server = PreboundAcceptServer::duplex(addr, listener)
             .map_err(|e| ChannelError::Other(anyhow::anyhow!("{e}")))?;
-        Ok(self.serve_duplex_with_server(server))
+        Ok(self.serve_duplex_with_server(server, endpoint_owner))
     }
 
-    fn serve_duplex_with_server(&self, server: PreboundAcceptServer) -> GatewayServeHandle {
+    fn serve_duplex_with_server(
+        &self,
+        server: PreboundAcceptServer,
+        endpoint_owner: control::EndpointOwner,
+    ) -> GatewayServeHandle {
         let bound_addr = server.addr().clone();
         let location = Location::from(bound_addr.clone());
         // The accept loop and its per-connection tasks are driven by a
@@ -705,7 +710,6 @@ impl Gateway {
         let gateway = self.clone();
         let inner = server.inner;
         let serve_id = self.add_server(location);
-        let endpoint_owner = control::EndpointOwner::default();
         let loop_owner = endpoint_owner.clone();
         let join_handle = tokio::spawn(async move {
             duplex_accept_loop(inner, bound_addr, gateway, loop_token, loop_owner).await;
@@ -748,10 +752,18 @@ impl Gateway {
         addr: ChannelAddr,
         listener: Option<std::net::TcpListener>,
     ) -> Result<GatewayServeHandle, ChannelError> {
+        self.serve_mux_with_endpoint_owner(addr, listener, control::EndpointOwner::default())
+    }
+
+    fn serve_mux_with_endpoint_owner(
+        &self,
+        addr: ChannelAddr,
+        listener: Option<std::net::TcpListener>,
+        endpoint_owner: control::EndpointOwner,
+    ) -> Result<GatewayServeHandle, ChannelError> {
         let mux =
             channel::serve_mux::<MessageEnvelope, MessageEnvelope, AttachWire>(addr, listener)?;
         let bound_addr = mux.addr().clone();
-        let endpoint_owner = control::EndpointOwner::default();
         let simplex_gateway = control::EndpointIngress::new(self.clone(), endpoint_owner.clone());
         let duplex_owner = endpoint_owner.clone();
         let duplex_gateway = self.clone();
@@ -800,13 +812,59 @@ impl Gateway {
         addr: ChannelAddr,
         listener: Option<std::net::TcpListener>,
     ) -> Result<GatewayServeHandle, ChannelError> {
+        self.serve_with_endpoint_owner(addr, listener, control::EndpointOwner::default())
+    }
+
+    /// Serve a host frontend with `proc` registered before receiving requests.
+    ///
+    /// Kernel-socket (net) transports use a muxed listener so simplex clients
+    /// and duplex attach clients share one address; the gateway owns both
+    /// the simplex and (`AttachWire`) duplex accept paths, so there is a single
+    /// attach protocol whether a frontend is muxed or a plain duplex endpoint.
+    /// `serve_mux` requires a net transport, so we branch on `is_net()` rather
+    /// than `supports_duplex()` (the in-process `Local` transport supports
+    /// duplex but is not a kernel socket). Each path registers the bound
+    /// address as the gateway's active serve location. The muxed frontend
+    /// owns a listener-scoped runtime control registration.
+    /// Ownership is weak and scoped to this listener.
+    /// Ordinary envelopes still route through the gateway's full proc table.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `proc` does not belong to this gateway or has a singleton id.
+    pub fn serve_frontend_with_listener(
+        &self,
+        addr: ChannelAddr,
+        listener: Option<std::net::TcpListener>,
+        proc: &Proc,
+    ) -> Result<GatewayServeHandle, ChannelError> {
+        assert!(
+            Arc::ptr_eq(&self.inner, &proc.gateway().inner),
+            "frontend owner must be attached to its gateway"
+        );
+        let owner = control::EndpointOwner::default();
+        owner
+            .register(proc)
+            .expect("frontend owner must have an instance id");
+        if addr.transport().is_net() {
+            self.serve_mux_with_endpoint_owner(addr, listener, owner)
+        } else {
+            self.serve_with_endpoint_owner(addr, listener, owner)
+        }
+    }
+
+    fn serve_with_endpoint_owner(
+        &self,
+        addr: ChannelAddr,
+        listener: Option<std::net::TcpListener>,
+        owner: control::EndpointOwner,
+    ) -> Result<GatewayServeHandle, ChannelError> {
         if addr.transport().supports_duplex() {
-            self.serve_duplex_with_listener(addr, listener)
+            self.serve_duplex_with_listener(addr, listener, owner)
         } else {
             let addr = self.resolve_serve_addr(addr);
             let (addr, rx) = channel::serve_with_listener(addr, listener)?;
             let serve_id = self.add_server(Location::from(addr));
-            let owner = control::EndpointOwner::default();
             let raw = control::EndpointIngress::new(self.clone(), owner.clone()).serve(rx);
             let mut handle = GatewayServeHandle::from_simplex(self.clone(), raw, Some(serve_id));
             handle.endpoint_owner = Some(owner);
@@ -1584,6 +1642,74 @@ mod tests {
     use crate::testing::ids::test_actor_id;
     use crate::testing::pingpong::PingPongActor;
     use crate::testing::pingpong::PingPongMessage;
+
+    #[tokio::test]
+    async fn test_initial_endpoint_owner_on_listener_transports() {
+        let caller_gateway = Gateway::new();
+        let mut caller_listener =
+            Gateway::serve(&caller_gateway, ChannelAddr::any(ChannelTransport::Unix)).unwrap();
+        let caller = Proc::builder()
+            .shared_gateway(caller_gateway.clone())
+            .build()
+            .unwrap();
+        let client = caller.client("initial_owner");
+
+        for transport in [
+            ChannelTransport::Local,
+            ChannelTransport::Unix,
+            ChannelTransport::Tcp(crate::channel::TcpMode::Localhost),
+        ] {
+            let gateway = Gateway::new();
+            let owner = Proc::builder()
+                .proc_id(ProcId::instance(Label::strip("service")))
+                .shared_gateway(gateway.clone())
+                .build()
+                .unwrap();
+            let other = Proc::builder()
+                .proc_id(ProcId::instance(Label::strip("service")))
+                .shared_gateway(gateway.clone())
+                .build()
+                .unwrap();
+            let mut listener = gateway
+                .serve_frontend_with_listener(ChannelAddr::any(transport), None, &owner)
+                .unwrap();
+            let location = gateway.default_location();
+            let resolved = caller_gateway
+                .resolve_endpoint_proc(&client, location.clone())
+                .await
+                .unwrap();
+            assert_eq!(resolved.id(), owner.proc_id());
+            assert_ne!(resolved.id(), other.proc_id());
+            assert_eq!(resolved.location(), &location);
+            listener.stop("test complete");
+            listener.join().await.unwrap();
+        }
+        caller_listener.stop("test complete");
+        caller_listener.join().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_initial_endpoint_owner_on_adopted_tcp_listener() {
+        let socket = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address =
+            ChannelAddr::from_zmq_url(&format!("tcp://{}", socket.local_addr().unwrap())).unwrap();
+        let gateway = Gateway::new();
+        let owner = Proc::builder()
+            .shared_gateway(gateway.clone())
+            .build()
+            .unwrap();
+        let mut listener = gateway
+            .serve_frontend_with_listener(address.clone(), Some(socket), &owner)
+            .unwrap();
+        let client = owner.client("adopted_listener_owner");
+        let resolved = gateway
+            .resolve_endpoint_proc(&client, address.into())
+            .await
+            .unwrap();
+        assert_eq!(resolved.id(), owner.proc_id());
+        listener.stop("test complete");
+        listener.join().await.unwrap();
+    }
 
     #[derive(Clone)]
     struct RecordingSender(mpsc::UnboundedSender<MessageEnvelope>);
@@ -2841,7 +2967,8 @@ mod tests {
         let rack_addr = channel::ChannelAddr::any(ChannelTransport::Unix);
         let rack_server = PreboundAcceptServer::duplex(rack_addr, None).unwrap();
         let rack_addr = rack_server.addr().clone();
-        let mut rack_listener = rack.serve_duplex_with_server(rack_server);
+        let mut rack_listener =
+            rack.serve_duplex_with_server(rack_server, control::EndpointOwner::default());
         let leaf = Gateway::isolated();
         let mut leaf_attach = leaf
             .serve_via_with_key(rack_addr, Some(Uid::singleton(Label::strip("worker"))))

@@ -18,6 +18,8 @@ Conflicting live registration is rejected. A dead owner may be explicitly
 replaced; a stopped endpoint cannot be reused. Ownership never registers a
 singleton alias in the gateway's proc table.
 
+If clients know a frontend address before startup, use `Gateway::serve_frontend_with_listener(addr, listener, proc)`. It registers the service proc before the listener receives requests, so discovery cannot arrive between serving and registration. Create the proc on that gateway first; create actor references after binding establishes their advertised location. Hosts use this operation for their frontends and register outbound attachment owners after the attach completes.
+
 `Gateway::resolve_endpoint_proc(cx, location)` sends an ordinary, unsequenced
 `ResolveProc` control with a one-shot reply port in the existing context.
 `hyperactor_mesh::host::query_service_proc` provides the Host-facing API.

@@ -351,7 +351,7 @@ impl<M: ProcManager> Host<M> {
     ///
     /// When `via` is `Some`, the gateway attaches to that remote duplex
     /// address with [`Gateway::serve_via`] *after* the local
-    /// frontend/backend serves but *before* minting the built-in procs,
+    /// frontend/backend serves but *before* minting actor references,
     /// so the via session is the newest active serve. That ordering
     /// makes every ref minted on this host advertise the routable
     /// `Via` location rather than the bare local frontend, which is
@@ -376,25 +376,21 @@ impl<M: ProcManager> Host<M> {
                 return Err(HostError::InvalidFrontendLocation(addr.location().clone()));
             }
         };
+        // The frontend needs a live service owner from its first query.
+        // Proc construction binds no actor references; those are minted after
+        // the gateway establishes its final advertised location.
+        // Discovery can return this proc before bootstrap spawns HostAgent.
+        // The proc holds messages for an actor that has not yet been created
+        // until it starts or PENDING_ACTOR_DELIVERY_TIMEOUT expires.
+        let service_proc = Proc::builder()
+            .proc_id(service_proc_id.clone())
+            .shared_gateway(gateway.clone())
+            .build()
+            .map_err(HostError::ProcConstructionFailure)?;
         let mut backend_handle = Gateway::serve(&gateway, ChannelAddr::any(manager.transport()))?;
         let backend_addr = gateway.default_location().addr().clone();
 
-        // Serve the frontend. Kernel-socket (net) transports use a muxed
-        // listener so simplex clients and duplex attach clients share one
-        // address; the gateway owns both the simplex and (`AttachWire`)
-        // duplex accept paths, so there is a single attach protocol whether
-        // a frontend is muxed or a plain duplex endpoint. `serve_mux`
-        // requires a net transport, so we branch on `is_net()` rather than
-        // `supports_duplex()` (the in-process `Local` transport supports
-        // duplex but is not a kernel socket). Both paths register the bound
-        // address as the gateway's active serve location. The muxed frontend
-        // owns a listener-scoped runtime control registration.
-        let frontend_result: Result<GatewayServeHandle, ChannelError> = if addr.transport().is_net()
-        {
-            gateway.serve_mux_with_listener(addr, listener)
-        } else {
-            gateway.serve_with_listener(addr, listener)
-        };
+        let frontend_result = gateway.serve_frontend_with_listener(addr, listener, &service_proc);
         let mut frontend_handle = match frontend_result {
             Ok(handle) => handle,
             Err(error) => {
@@ -415,7 +411,7 @@ impl<M: ProcManager> Host<M> {
         );
 
         // Attach to the remote gateway after the local serves are live
-        // but before any proc or actor ref is minted below. `serve_via`
+        // but before any actor ref is minted below. `serve_via`
         // must be the newest active serve so it supplies the gateway's
         // `default_location`; otherwise the local frontend serve above
         // would win, and refs would advertise a bare, cluster-
@@ -444,30 +440,20 @@ impl<M: ProcManager> Host<M> {
             None => None,
         };
 
-        // Set up the system proc and the local client proc after the
-        // gateway servers are live. The HostAgent is published only
-        // after it binds its handler, so the brief unroutable window is
-        // before normal clients can discover this host.
+        // Mint the local client only after the gateway's advertised location
+        // is final, so its actor references carry the frontend or via path.
         let expected_service_proc_addr =
             ProcAddr::new(service_proc_id.clone(), gateway.default_location());
-        let service_proc = Proc::builder()
-            .proc_id(service_proc_id)
-            .shared_gateway(gateway.clone())
-            .build()
-            .map_err(HostError::ProcConstructionFailure)?;
-        frontend_handle
-            .register_proc_owner(&service_proc)
-            .map_err(HostError::ProcConstructionFailure)?;
-        if let Some(handle) = &via_handle {
-            handle
-                .register_proc_owner(&service_proc)
-                .map_err(HostError::ProcConstructionFailure)?;
-        }
         assert_eq!(
             service_proc.proc_addr(),
             expected_service_proc_addr,
             "service proc must use the gateway's active advertised location"
         );
+        if let Some(handle) = &via_handle {
+            handle
+                .register_proc_owner(&service_proc)
+                .map_err(HostError::ProcConstructionFailure)?;
+        }
         let local_proc = Proc::builder()
             .proc_id(ProcId::instance(Label::strip(LOCAL_PROC_NAME)))
             .shared_gateway(gateway.clone())
@@ -3303,7 +3289,7 @@ mod tests {
         assert_eq!(via_uid, host.gateway().uid());
         assert_eq!(inner.addr(), &remote_addr);
 
-        // The built-in service proc, minted after `serve_via`, must
+        // The built-in service proc's address must
         // also carry the Via — it advertised a bare address before the
         // fix.
         let svc_proc_addr = host.system_proc().proc_addr();

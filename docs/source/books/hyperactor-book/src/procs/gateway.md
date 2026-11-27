@@ -51,6 +51,7 @@ Their guards remove the local registration when the proc dies.
 - `serve(addr)` starts a simplex listener.
 - `serve_duplex(addr)` accepts actor traffic and attachment handshakes.
 - `serve_with_listener(addr, listener)` can reuse a pre-bound listener.
+- `serve_frontend_with_listener(addr, listener, proc)` registers a frontend's owner before receiving requests. Use it when clients know the address before startup; transports where `is_net()` is true use the mux, including Vsock.
 - `serve_via(addr)` attaches to one upstream under this gateway's uid.
 - `serve_via_with_key(addr, Some(key))` selects a deployment-chosen slot.
 
