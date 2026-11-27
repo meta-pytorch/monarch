@@ -22,4 +22,30 @@ declare_attrs! {
         Some("stop_grace_period".to_string()),
     ))
     pub attr STOP_GRACE_PERIOD: Duration = Duration::from_secs(10);
+
+    /// The longest a connection request may ask to wait for an offer.
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_REMOTE_RENDEZVOUS_MAX_WAIT".to_string()),
+        Some("rendezvous_max_wait".to_string()),
+    ))
+    pub attr RENDEZVOUS_MAX_WAIT: Duration = Duration::from_secs(600);
+
+    /// The most requests a rendezvous queues while no offer is posted.
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_REMOTE_RENDEZVOUS_MAX_QUEUED".to_string()),
+        Some("rendezvous_max_queued".to_string()),
+    ))
+    pub attr RENDEZVOUS_MAX_QUEUED: usize = 1024;
+
+    /// How much longer a connector waits for the rendezvous's answer after
+    /// its requested wait ends. The rendezvous starts the wait when the
+    /// request arrives, so its deadline falls after the connector's
+    /// unpadded one. The margin covers sending the request, the rendezvous
+    /// getting to it, and the reply, so the rendezvous's answer normally
+    /// decides the outcome.
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_REMOTE_RENDEZVOUS_REPLY_MARGIN".to_string()),
+        Some("rendezvous_reply_margin".to_string()),
+    ))
+    pub attr RENDEZVOUS_REPLY_MARGIN: Duration = Duration::from_secs(5);
 }
