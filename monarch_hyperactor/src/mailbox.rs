@@ -1241,6 +1241,80 @@ def maybe_torch():
         drop(unobserved);
     }
 
+    // HDL-23: cancelling the only await on a port receive releases the
+    // receiver, so the next message stays queued for a new receive. Each step
+    // is witnessed: the receive holds the receiver's lock, then the cancel
+    // releases it, and only then is the message sent.
+    #[tokio::test]
+    async fn cancelled_await_leaves_the_next_message() {
+        let client = test_instance("cancelled_await_leaves_the_next_message");
+        let (sender, receiver) = client.mailbox_for_py().open_port::<PythonMessage>();
+        let receiver = PythonPortReceiver {
+            inner: Arc::new(tokio::sync::Mutex::new(receiver)),
+        };
+        let (helper, event_loop, fut) = in_actor_context(&client, |py| {
+            let helper = PyModule::from_code(
+                py,
+                cr#"
+import asyncio
+
+
+def observe(loop, handle):
+    async def start():
+        return handle.as_asyncio()
+
+    return loop.run_until_complete(start())
+
+
+def cancel_and_reap(loop, fut):
+    fut.cancel()
+    # One iteration runs the done callbacks, including the reaper.
+    loop.call_soon(loop.stop)
+    loop.run_forever()
+"#,
+                c"mailbox_cancel_test.py",
+                c"mailbox_cancel_test",
+            )?;
+            let event_loop = py.import("asyncio")?.call_method0("new_event_loop")?;
+            // The test keeps no reference to the Handle: only the await does.
+            let handle = Py::new(py, receiver.recv(py, false)?)?;
+            let fut = helper.call_method1("observe", (&event_loop, handle))?;
+            Ok((helper.unbind(), event_loop.unbind(), fut.unbind()))
+        });
+
+        let deadline = std::time::Instant::now() + WAIT;
+        while receiver.inner.try_lock().is_ok() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the awaited receive should take the receiver's lock"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        monarch_with_gil_blocking(GilSite::Test, |py| {
+            helper
+                .bind(py)
+                .call_method1("cancel_and_reap", (event_loop.bind(py), fut.bind(py)))
+                .map(drop)
+        })
+        .expect("cancel the await and run the reaper");
+        let deadline = std::time::Instant::now() + WAIT;
+        while receiver.inner.try_lock().is_err() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the cancelled receive should release the receiver's lock"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+
+        sender.try_post(&client, result_message()).unwrap();
+        let observed = in_actor_context(&client, |py| start(py, receiver.recv(py, false)?));
+        assert_value(value(&observed).await);
+        monarch_with_gil_blocking(GilSite::Test, |py| {
+            event_loop.bind(py).call_method0("close").map(drop)
+        })
+        .expect("close the loop");
+    }
+
     // The once port is claimed by the first receive observed, not the first
     // created; a receive observed after that fails.
     #[tokio::test]

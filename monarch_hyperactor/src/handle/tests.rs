@@ -148,22 +148,6 @@ def run_cancel(h):
     finally:
         loop.close()
 
-async def _cancel_then_await(h):
-    # cancel the first observer, then observe again while a live producer runs
-    f1 = h.as_asyncio()
-    f1.cancel()
-    result = await h.as_asyncio()
-    # let the cancelled observer's completion callback drain (it no-ops)
-    await asyncio.sleep(0.05)
-    return (f1.cancelled(), result, h.poll())
-
-def run_cancel_then_await(h):
-    loop = asyncio.new_event_loop()
-    try:
-        return loop.run_until_complete(_cancel_then_await(h))
-    finally:
-        loop.close()
-
 async def _two(h):
     a = h.as_asyncio()
     b = h.as_asyncio()

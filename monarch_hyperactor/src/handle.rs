@@ -57,7 +57,8 @@
 //!   `returns_future` `.get()` that would block a running event loop
 //!   (`monarch._src.actor.returns_future`, RF-7).
 //! - **HDL-7 (`as_asyncio` publish).** The pipe observer waits through
-//!   `wait_arrival`, the fallback observer through `wait_terminal`; each
+//!   `wait_arrival`, the fallback observer through `wait_observed` and then
+//!   `settle_observed`; each
 //!   checks the state before it registers a wake (HDL-25). The result is
 //!   published on the loop thread through
 //!   `complete_asyncio_future`, by the wake reader (HDL-17) or by the
@@ -156,7 +157,15 @@
 //!   [`crate::handle_wake`]). A token that finds the reply claimed by another
 //!   observer re-arms its entry under the same token. Enforced by
 //!   construction: `Notifier` has no `Py<_>`, and a token follows a terminal
-//!   outcome, raw arrival or claim release.
+//!   outcome, raw arrival or claim release. The task also holds a `Release`
+//!   that completes when its sender, held by the await's entry, is dropped,
+//!   which happens when whatever removed the entry drops it. An interrupted
+//!   delivery puts the entry back with the same sender, and a claimed re-arm
+//!   gives the new task a new pair. A release observed by the task's select
+//!   ends the wait without pushing a token. An arrival that wins the select,
+//!   including one that becomes ready after the select polled the release as
+//!   pending, still pushes its token, which the reader ignores once the entry
+//!   is gone.
 //! - **HDL-18 (notification ordering under supported pipe outcomes).** A
 //!   notifier pushes its token before writing the pipe, and the reader drains
 //!   the pipe before the queue, never returning between the two; both retry
@@ -174,10 +183,10 @@
 //!   waiting task's only owner outside the task's own cycle; `__traverse__`
 //!   exposes each entry's future and `Handle` object to the garbage collector.
 //!   Closing a loop therefore releases the channel-owned graph (the channel,
-//!   its read end, its entries, their futures and `Handle`s). The write end
-//!   stays open until every `Notifier` is dropped, so a loop closed while an
-//!   await waits on a `Handle` that never completes keeps that descriptor
-//!   (HDL-20). A loop dropped
+//!   its read end, its entries, their futures and `Handle`s). Releasing an
+//!   entry releases its pipe waiter, which drops its core and `Notifier` when
+//!   Tokio next polls it. The write end stays open until every `Notifier` is
+//!   dropped (HDL-20). A loop dropped
 //!   without being closed while an await on a pending `Handle` is registered
 //!   is still freed by the collector. Not freed: a loop dropped without being
 //!   closed while an undelivered entry's `Handle` value references it, and any
@@ -189,12 +198,19 @@
 //!   This requires `SIGPIPE` to be ignored, as Rust's runtime and CPython set
 //!   it by default; in a process that restores `SIG_DFL`, a completion that
 //!   races loop teardown can kill the process. Every `Notifier` owns the write
-//!   end through its `Arc<Waker>` until its `Handle` completes, so no write
-//!   reaches a reused descriptor.
+//!   end through its `Arc<Waker>` until its `Handle` completes or its waiter,
+//!   released with its entry, next runs, so no write reaches a reused
+//!   descriptor.
 //! - **HDL-21 (fallback).** For a Handle still pending, a loop whose
 //!   `add_reader` raises `NotImplementedError` or that cannot be weakly
 //!   referenced uses the `call_soon_threadsafe` path; HDL-7 applies there
-//!   unchanged.
+//!   unchanged. The future's done callback releases the waiter: a release
+//!   observed by its select ends the wait before it takes a reconstruction
+//!   claim or an outcome. If the observation wins, the waiter finishes as
+//!   before, and its completion on a done future is ignored. Closing the loop
+//!   does not release a waiter whose future is unfinished. A future that
+//!   rejects `add_done_callback` makes `as_asyncio` raise, before any waiter
+//!   starts.
 //! - **HDL-22 (ready shortcut).** `as_asyncio()` on a Handle that already holds
 //!   its outcome, a value, a stored exception or producer loss (HDL-10),
 //!   returns a loop future already completed with it through
@@ -206,13 +222,16 @@
 //! - **HDL-23 (stop when nobody can observe the result).** A `Handle`, its
 //!   clones, a blocked `get()`, a Rust waiter and the native waiter behind
 //!   `await`/`as_asyncio()` each hold the core strongly; producers hold it
-//!   weakly. When the last strong reference drops, the core's `Drop` stops a
-//!   producer with `ObserverLoss::Stop` (a port receive). Its stop future is
-//!   created before its task is scheduled, so a loss before the first poll
-//!   still stops it. The stop is not immediate: the task must notice it, and
-//!   it can still take a message before then. Other producers keep running
-//!   when their observers are dropped (HDL-4), and so does an unpickling retry
-//!   after an interrupted decode (HDL-26), whose message is already taken.
+//!   weakly. The native waiter holds it until the Handle can be read or it
+//!   selects a release: the await entry's sender is dropped on the pipe path,
+//!   or the future's done callback drops it on the fallback. When the last
+//!   strong reference drops, the core's `Drop` stops a producer with
+//!   `ObserverLoss::Stop` (a port receive). Its stop future is created before
+//!   its task is scheduled, so a loss before the first poll still stops it.
+//!   The stop is not immediate: the task must notice it, and it can still
+//!   take a message before then. Other producers keep running when their
+//!   observers are dropped (HDL-4), and so does an unpickling retry after an
+//!   interrupted decode (HDL-26), whose message is already taken.
 //! - **HDL-24 (deferred start).** A deferred producer starts on the first
 //!   observation that passes its own checks. `get()` refuses on Tokio,
 //!   validates its timeout and warns on a running loop before it touches the
@@ -734,6 +753,19 @@ impl PyHandle {
 
     /// Return a standard `asyncio.Future` that resolves when the handle does.
     ///
+    /// Each call on a pending Handle starts its own Tokio task to wait for
+    /// the result. Cancelling the returned future tells that waiter to stop.
+    /// The producer does the work. An ordinary producer keeps running even
+    /// if every observer leaves (HDL-4).
+    ///
+    /// A port receive stops when its last observer goes away (HDL-23).
+    /// A retained Handle or another waiter keeps it alive. Suppose you
+    /// cancel the only await on `receiver.recv()` and discard its Handle.
+    /// A Tokio waiter left behind can keep the receive alive long enough
+    /// to take the next message, leaving a later `recv()` waiting. Releasing
+    /// that last waiter lets the receive stop and release the receiver when
+    /// it acts on the stop signal.
+    ///
     /// Requires a running loop; off a loop this raises the native `RuntimeError`
     /// from `asyncio.get_running_loop()`, before it starts anything (HDL-24). A
     /// Tokio observer of the core waits for completion, or for a raw reply's
@@ -763,11 +795,13 @@ impl PyHandle {
     /// cancelled future is left alone and the handle continues. If the loop has
     /// closed by then, the result is never set, and nothing panics.
     ///
-    /// Each call on a pending Handle spawns its own observer; cancelling the
-    /// returned future does not stop the observer, which exits when the handle
-    /// resolves or, on the pipe path, when its raw reply arrives. An await
-    /// cancelled, or whose loop closes, before the reply arrives does not
-    /// unpickle it; another observer can.
+    /// A waiter that sees the cancellation signal first exits without
+    /// unpickling the reply. The pipe reader ignores late wakes for cancelled
+    /// futures. On the fallback path, a waiter that has already observed an
+    /// outcome finishes reading it, including unpickling a raw reply it
+    /// claimed. The loop ignores its completion if the future is already done.
+    /// Closing the loop releases pipe waiters. A fallback waiter with an
+    /// unfinished future still waits for the Handle's outcome.
     fn as_asyncio<'py>(slf: PyRef<'_, Self>, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         // HDL-6: off a loop this yields the native RuntimeError, not
         // WouldBlockRuntime. HDL-24: this check runs before anything starts.

@@ -6,7 +6,9 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::convert::Infallible;
 use std::sync::Arc;
+use std::sync::Mutex;
 
 use monarch_types::py_global;
 use pyo3::exceptions::PyRuntimeError;
@@ -14,19 +16,24 @@ use pyo3::exceptions::PyStopIteration;
 use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
 use pyo3::types::PyCFunction;
+use pyo3::types::PyTuple;
+use tokio::sync::oneshot;
 
 use super::PyHandle;
 use super::core::Core;
 use super::core::Observed;
 use super::core::WaitOutcome;
+use super::core::settle_observed;
 use super::core::wait_arrival;
-use super::core::wait_terminal;
+use super::core::wait_observed;
 use super::outcome::ReconstructionFailurePolicy;
 use super::outcome::clone_shared_outcome;
 use super::outcome::handle_producer_ended_error;
 use super::outcome::reconstruct_observed;
 use crate::handle_wake::LoopWake;
 use crate::handle_wake::Notifier;
+use crate::handle_wake::Release;
+use crate::handle_wake::release_pair;
 use crate::runtime::GilSite;
 use crate::runtime::get_tokio_runtime;
 use crate::runtime::monarch_with_gil;
@@ -45,10 +52,20 @@ py_global!(invalid_state_error, "asyncio", "InvalidStateError");
 /// The task owns the core and native notifier, but no Python object, so waiting
 /// and waking require no GIL. The wake reader also uses this helper to re-arm
 /// an await when another observer is reconstructing the reply.
-pub(super) fn spawn_arrival_wake(core: Arc<Core>, loop_notifier: Notifier) {
+///
+/// `release` completes when the await entry's sender is dropped. If the task
+/// selects it while it waits, it pushes no token and drops the core, which
+/// stops a port receive nobody else observes (HDL-17, HDL-23).
+pub(super) fn spawn_arrival_wake(core: Arc<Core>, loop_notifier: Notifier, release: Release) {
     get_tokio_runtime().spawn(async move {
-        wait_arrival(core).await;
-        loop_notifier.notify();
+        tokio::select! {
+            // A release seen on the same poll as an arrival wins. An arrival
+            // that won earlier still notifies; the reader ignores a token
+            // whose entry is gone.
+            biased;
+            () = release.released() => {}
+            () = wait_arrival(core) => loop_notifier.notify(),
+        }
     });
 }
 
@@ -94,8 +111,8 @@ impl PyHandle {
     /// Start a native waiter for this Handle's next readable state. When the other
     /// observer stores an outcome or releases its claim, `loop_notifier` queues the
     /// same token and wakes the loop again.
-    pub(crate) fn notify_on_arrival(&self, loop_notifier: Notifier) {
-        spawn_arrival_wake(Arc::clone(&self.core), loop_notifier);
+    pub(crate) fn notify_on_arrival(&self, loop_notifier: Notifier, release: Release) {
+        spawn_arrival_wake(Arc::clone(&self.core), loop_notifier, release);
     }
 }
 
@@ -154,49 +171,104 @@ pub(super) fn register_pending(
     // the loop lacks add_reader support or cannot be weakly referenced; other
     // installation failures propagate instead of silently falling back.
     if let Some(channel) = LoopWake::for_loop(py, event_loop)? {
-        // The waiter task retains the core through arrival (HDL-23).
+        // The waiter task retains the core through arrival, or until it
+        // selects the release (HDL-23).
         let core = handle.core.clone();
         // Associate this asyncio future with its Handle in the channel's table.
         // handle.into() gives the entry an owned Python reference to the Handle.
         // The notifier carries only a registration token and native wake state.
-        let notifier = LoopWake::register(&channel, fut, handle.into())?;
+        // The release completes when the entry, and its sender, is dropped.
+        let (notifier, release) = LoopWake::register(&channel, fut, handle.into())?;
         // Without the GIL or a claim, wait for an outcome or raw bytes, then
         // queue the token and make the pipe readable. The loop thread reads,
         // or rebuilds, the result and completes fut (HDL-17).
-        spawn_arrival_wake(core, notifier);
+        spawn_arrival_wake(core, notifier, release);
         // Return now; the loop callback will complete the asyncio future.
         return Ok(());
     }
 
-    spawn_fallback_completion(handle.core.clone(), event_loop, fut);
+    // HDL-21: the future's done callback releases the waiter. A future that
+    // rejects the callback raises here, before any waiter starts, as the
+    // pipe path does.
+    let (release, released) = release_pair();
+    let on_done = Bound::new(
+        py,
+        ReleaseOnDone {
+            release: Mutex::new(Some(release)),
+        },
+    )?;
+    fut.call_method1("add_done_callback", (on_done,))?;
+    spawn_fallback_completion(handle.core.clone(), event_loop, fut, released);
     // The caller observes this future; completion happens later on its loop.
     Ok(())
 }
 
+/// Releases a fallback waiter once its future is done (HDL-21).
+///
+/// [`register_pending`] attaches it with `add_done_callback`. Calling it drops
+/// the sender, and so does dropping it, for example when asyncio clears a
+/// queued callback at loop close. It holds no Python object, so it adds no
+/// reference cycle (HDL-19). A `pyclass` because it is a Python callback;
+/// `frozen` because the sender is taken through `&self`.
+#[pyclass(frozen)]
+struct ReleaseOnDone {
+    /// Taken and dropped when the future is done.
+    release: Mutex<Option<oneshot::Sender<Infallible>>>,
+}
+
+#[pymethods]
+impl ReleaseOnDone {
+    /// Drop the sender. Accepts any arguments; a done callback is passed the
+    /// future.
+    #[pyo3(signature = (*_args))]
+    fn __call__(&self, _args: &Bound<'_, PyTuple>) {
+        drop(
+            self.release
+                .lock()
+                .expect("release lock should not be poisoned")
+                .take(),
+        );
+    }
+}
+
 /// Start the Tokio task that completes `fut` without a wake pipe (HDL-21).
+///
+/// `release` completes when `fut`'s done callback drops its sender. If the
+/// task selects it while it waits for an observation, it schedules nothing
+/// and drops the core (HDL-23). Once an observation wins, it finishes as
+/// before, rebuilding a raw reply if it holds the claim, and a completion on
+/// a done future is ignored. Closing the loop with `fut` unfinished signals
+/// nothing.
 fn spawn_fallback_completion(
     core: Arc<Core>,
     event_loop: &Bound<'_, PyAny>,
     fut: &Bound<'_, PyAny>,
+    release: Release,
 ) {
     // HDL-21: without a pipe channel, the Tokio waiter must acquire the GIL
     // and use call_soon_threadsafe to queue completion on the loop thread.
     // Retain a native observer through completion (HDL-23). Already-decoded
     // results need no GIL while waiting; a raw reply is reconstructed and
     // settled on this worker before completion is scheduled.
-    let wait = wait_terminal(core);
     // Retain owned references to the same loop and future, not borrowed Bounds,
     // so the task can use them after this binding call returns.
     let loop_handle = event_loop.clone().unbind();
     let fut_handle = fut.clone().unbind();
 
     get_tokio_runtime().spawn(async move {
+        // Only the GIL-free wait for an observation can be released. A
+        // release seen on the same poll as an observation wins.
+        let observed = tokio::select! {
+            biased;
+            () = release.released() => return,
+            observed = wait_observed(core) => observed,
+        };
         // Wait for a final Python outcome, or report producer loss.
         // A raw reply is unpickled and stored on this worker first;
         // already-decoded results take no GIL during this wait.
-        let outcome = wait.await;
+        let outcome = settle_observed(observed).await;
         let scheduled = monarch_with_gil(GilSite::Convert, move |py| {
-            // wait_terminal() has released Core.state's mutex. Under the GIL,
+            // settle_observed() has released Core.state's mutex. Under the GIL,
             // clone the stored value or error. and_then leaves a producer-loss
             // error unchanged (HDL-9/HDL-10).
             let result = outcome.and_then(|outcome| clone_shared_outcome(py, &outcome));
