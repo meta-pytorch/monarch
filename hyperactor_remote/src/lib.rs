@@ -16,6 +16,7 @@ pub mod keepalive;
 pub mod link;
 pub mod proc_spawner;
 pub mod proto;
+pub mod rendezvous;
 pub mod supervision;
 pub mod token;
 

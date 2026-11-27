@@ -3413,6 +3413,31 @@ impl<A: Actor> Instance<A> {
         M: Message,
         D: PostAfterEndpoint<A, M>,
     {
+        self.schedule_post(dest, message, || tokio::time::Instant::now() + delay);
+    }
+
+    /// Post `message` to `dest` at or after `deadline` on the runtime clock.
+    ///
+    /// Like [`Self::post_after`], this is best-effort. The actor runtime
+    /// discards delayed posts that are still pending when the actor stops.
+    #[expect(private_bounds, reason = "uses the same endpoint types as post_after")]
+    pub fn post_at<D, M>(&self, dest: D, message: M, deadline: tokio::time::Instant)
+    where
+        M: Message,
+        D: PostAfterEndpoint<A, M>,
+    {
+        self.schedule_post(dest, message, || deadline);
+    }
+
+    fn schedule_post<D, M>(
+        &self,
+        dest: D,
+        message: M,
+        deadline: impl FnOnce() -> tokio::time::Instant,
+    ) where
+        M: Message,
+        D: PostAfterEndpoint<A, M>,
+    {
         let dest_location = dest.endpoint_location();
         if matches!(*self.inner.cell.status().borrow(), ActorStatus::Client) {
             self.report_delivery_failure(
@@ -3445,10 +3470,9 @@ impl<A: Actor> Instance<A> {
             return;
         }
 
-        self.inner.delayed_posts.push(
-            tokio::time::Instant::now() + delay,
-            dest.into_delayed_post(message),
-        );
+        self.inner
+            .delayed_posts
+            .push(deadline(), dest.into_delayed_post(message));
     }
 
     /// Start an A-typed actor onto this instance with the provided params. When spawn returns,
