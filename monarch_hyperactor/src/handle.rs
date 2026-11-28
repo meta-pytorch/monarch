@@ -154,7 +154,7 @@
 //!   outcome is Done or Lost or a raw reply is unclaimed, then pushes the token
 //!   and writes the loop's pipe. The loop thread reads the value from the
 //!   `Handle`, claiming and rebuilding a raw reply there, and sets it (see
-//!   [`crate::handle_wake`]). A token that finds the reply claimed by another
+//!   `wake`). A token that finds the reply claimed by another
 //!   observer re-arms its entry under the same token. Enforced by
 //!   construction: `Notifier` has no `Py<_>`, and a token follows a terminal
 //!   outcome, raw arrival or claim release. The task also holds a `Release`
@@ -282,6 +282,7 @@ mod core;
 mod outcome;
 mod produce;
 mod receive;
+mod wake;
 
 use std::future::Future;
 use std::sync::Arc;
@@ -294,13 +295,11 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyType;
 
-pub(crate) use self::asyncio::LoopReadOutcome;
-pub(crate) use self::asyncio::complete_asyncio_future;
 use self::asyncio::complete_ready;
 use self::asyncio::register_pending;
 use self::core::Core;
 use self::core::Observation;
-pub(crate) use self::core::Publisher;
+use self::core::Publisher;
 use self::core::Running;
 use self::core::State;
 use self::core::WaitOutcome;
@@ -323,7 +322,7 @@ use self::receive::DeferredReceive;
 pub(crate) use self::receive::ReceiveOutcome;
 use self::receive::drive_inline;
 #[cfg(doc)]
-use crate::handle_wake::LoopWake;
+use self::wake::LoopWake;
 use crate::runtime::GilSite;
 use crate::runtime::get_tokio_runtime;
 use crate::runtime::is_in_tokio_runtime;

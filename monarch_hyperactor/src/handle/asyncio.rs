@@ -30,10 +30,10 @@ use super::outcome::ReconstructionFailurePolicy;
 use super::outcome::clone_shared_outcome;
 use super::outcome::handle_producer_ended_error;
 use super::outcome::reconstruct_observed;
-use crate::handle_wake::LoopWake;
-use crate::handle_wake::Notifier;
-use crate::handle_wake::Release;
-use crate::handle_wake::release_pair;
+use super::wake::LoopWake;
+use super::wake::Notifier;
+use super::wake::Release;
+use super::wake::release_pair;
 use crate::runtime::GilSite;
 use crate::runtime::get_tokio_runtime;
 use crate::runtime::monarch_with_gil;
@@ -70,7 +70,7 @@ pub(super) fn spawn_arrival_wake(core: Arc<Core>, loop_notifier: Notifier, relea
 }
 
 /// What the asyncio wake reader finds when an await's token arrives (HDL-17).
-pub(crate) enum LoopReadOutcome {
+pub(super) enum LoopReadOutcome {
     /// The shared value or error, to set on the await's future.
     Ready(PyResult<Py<PyAny>>),
     /// Another observer holds the raw reply's reconstruction claim. The await
@@ -88,7 +88,7 @@ impl PyHandle {
     /// Claim and rebuild an unclaimed raw reply here, under the loop's failure
     /// policy: only KeyboardInterrupt or SystemExit leaves it retryable
     /// (HDL-27). The stored result remains available to other observers.
-    pub(crate) fn read_on_loop(&self, py: Python<'_>) -> LoopReadOutcome {
+    pub(super) fn read_on_loop(&self, py: Python<'_>) -> LoopReadOutcome {
         match self.core.observe() {
             Observed::Done(outcome) => LoopReadOutcome::Ready(clone_shared_outcome(py, &outcome)),
             Observed::Lost => LoopReadOutcome::Ready(Err(handle_producer_ended_error())),
@@ -111,7 +111,7 @@ impl PyHandle {
     /// Start a native waiter for this Handle's next readable state. When the other
     /// observer stores an outcome or releases its claim, `loop_notifier` queues the
     /// same token and wakes the loop again.
-    pub(crate) fn notify_on_arrival(&self, loop_notifier: Notifier, release: Release) {
+    pub(super) fn notify_on_arrival(&self, loop_notifier: Notifier, release: Release) {
         spawn_arrival_wake(Arc::clone(&self.core), loop_notifier, release);
     }
 }
@@ -329,7 +329,7 @@ pub(super) fn schedule_completion(
 /// The future may already be settled when this runs: a cancelled future is left
 /// alone, and an already-completed one is swallowed. Any other error propagates.
 #[pyfunction]
-pub(crate) fn complete_asyncio_future(
+pub(super) fn complete_asyncio_future(
     fut: &Bound<'_, PyAny>,
     is_exc: bool,
     value: Py<PyAny>,

@@ -80,9 +80,9 @@ use pyo3::types::PyTuple;
 use pyo3::types::PyWeakrefReference;
 use tokio::sync::oneshot;
 
-use crate::handle::LoopReadOutcome;
-use crate::handle::PyHandle;
-use crate::handle::complete_asyncio_future;
+use super::PyHandle;
+use super::asyncio::LoopReadOutcome;
+use super::asyncio::complete_asyncio_future;
 use crate::pywaker;
 use crate::pywaker::Waker;
 use crate::pywaker::retry_eintr;
@@ -193,7 +193,7 @@ impl Entry {
 /// - `weakref`: a `TokenReaper` refers to its channel weakly, so no reference
 ///   cycle runs through Rust fields the garbage collector cannot see (HDL-19).
 #[pyclass(frozen, weakref)]
-pub(crate) struct LoopWake {
+pub(super) struct LoopWake {
     /// The sending half of the token queue, cloned into each [`Notifier`].
     tx: mpsc::Sender<u64>,
     /// The receiving half of the token queue. Only `on_readable` drains it, on
@@ -244,7 +244,7 @@ impl LoopWake {
     /// when the loop uses the `call_soon_threadsafe` fallback (HDL-21).
     ///
     /// Call on the thread running `event_loop`: installing calls `add_reader`.
-    pub(crate) fn for_loop<'py>(
+    pub(super) fn for_loop<'py>(
         py: Python<'py>,
         event_loop: &Bound<'py, PyAny>,
     ) -> PyResult<Option<Bound<'py, LoopWake>>> {
@@ -321,7 +321,7 @@ impl LoopWake {
     /// Takes the bound `channel` rather than `&self` because the reaper needs a
     /// weak reference to the Python object the registry holds, and a `&self`
     /// cannot provide one (HDL-19). On error, nothing stays registered.
-    pub(crate) fn register(
+    pub(super) fn register(
         channel: &Bound<'_, LoopWake>,
         fut: &Bound<'_, PyAny>,
         handle: Py<PyHandle>,
@@ -561,7 +561,7 @@ impl LoopWake {
         }
     }
 
-    pub(crate) fn entry_count(&self) -> usize {
+    pub(super) fn entry_count(&self) -> usize {
         self.entries
             .lock()
             .expect("entries lock should not be poisoned")
@@ -569,14 +569,14 @@ impl LoopWake {
     }
 
     /// Whether the pipe becomes readable within `timeout`, without draining it.
-    pub(crate) fn readable_within(&self, timeout: Duration) -> bool {
+    pub(super) fn readable_within(&self, timeout: Duration) -> bool {
         let mut fds = [PollFd::new(self.read_fd.as_fd(), PollFlags::POLLIN)];
         let millis = u16::try_from(timeout.as_millis()).unwrap_or(u16::MAX);
         poll(&mut fds, millis).unwrap() == 1
     }
 
     /// The pipe's write end. Its strong count falls as each notifier exits.
-    pub(crate) fn waker_for_test(&self) -> Arc<Waker> {
+    pub(super) fn waker_for_test(&self) -> Arc<Waker> {
         Arc::clone(&self.waker)
     }
 }
@@ -670,7 +670,7 @@ impl TokenReaper {
 /// await's `Handle` completed: the await's token, a sender into the channel's
 /// token queue, and the pipe's write end. It is plain Rust, with no Python
 /// object, so the observer uses it without the GIL (HDL-17).
-pub(crate) struct Notifier {
+pub(super) struct Notifier {
     /// A clone of the channel's `tx`. Sending fails once the channel is freed.
     tx: mpsc::Sender<u64>,
     /// The pipe's write end, shared with the channel and every other notifier.
@@ -683,7 +683,7 @@ pub(crate) struct Notifier {
 impl Notifier {
     /// Push the token, then write the pipe (HDL-18). A channel that is gone
     /// drops the token (HDL-20).
-    pub(crate) fn notify(self) {
+    pub(super) fn notify(self) {
         if self.tx.send(self.token).is_err() {
             return;
         }
@@ -699,11 +699,11 @@ impl Notifier {
 /// [`Entry`] on the pipe path, or the future's done callback on the fallback
 /// (HDL-17, HDL-21). Dropping the sender completes [`Release::released`]. It
 /// carries no value, and nothing is ever sent.
-pub(crate) struct Release(oneshot::Receiver<Infallible>);
+pub(super) struct Release(oneshot::Receiver<Infallible>);
 
 impl Release {
     /// Complete once the paired sender has been dropped.
-    pub(crate) async fn released(self) {
+    pub(super) async fn released(self) {
         // Nothing can be sent, so the receive ends only with the sender's
         // drop, as an error.
         let _ = self.0.await;
@@ -711,7 +711,7 @@ impl Release {
 }
 
 /// A sender and the [`Release`] it completes when dropped.
-pub(crate) fn release_pair() -> (oneshot::Sender<Infallible>, Release) {
+pub(super) fn release_pair() -> (oneshot::Sender<Infallible>, Release) {
     let (tx, rx) = oneshot::channel();
     (tx, Release(rx))
 }
@@ -727,7 +727,7 @@ mod tests {
     use pyo3::types::PyModule;
 
     use super::*;
-    use crate::handle::Publisher;
+    use crate::handle::core::Publisher;
     use crate::runtime::GilSite;
     use crate::runtime::ensure_python;
     use crate::runtime::monarch_with_gil_blocking;

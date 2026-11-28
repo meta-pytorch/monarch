@@ -23,7 +23,7 @@ use pyo3::types::PyModule;
 use super::*;
 use crate::handle::core::Observed;
 use crate::handle::core::ReconstructionClaim;
-use crate::handle_wake::LoopWake;
+use crate::handle::wake::LoopWake;
 
 // Build a still-pending `Handle` and return its publisher so the test
 // drives completion explicitly.
