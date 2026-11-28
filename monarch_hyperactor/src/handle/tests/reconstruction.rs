@@ -30,7 +30,7 @@ use crate::handle::core::State;
 use crate::handle::core::wait_arrival;
 use crate::handle::core::wait_terminal;
 use crate::handle::outcome::ReconstructionFailurePolicy;
-use crate::handle_wake::LoopWake;
+use crate::handle::wake::LoopWake;
 use crate::runtime::GilSite;
 use crate::runtime::ensure_python;
 use crate::runtime::get_tokio_runtime;

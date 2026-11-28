@@ -20,7 +20,6 @@ pub mod config;
 pub mod context;
 pub mod endpoint;
 pub mod handle;
-pub mod handle_wake;
 pub mod host_mesh;
 pub mod local_state_broker;
 pub mod logging;

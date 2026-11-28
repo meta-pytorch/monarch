@@ -28,6 +28,7 @@ use pyo3::types::PyTuple;
 use pyo3::types::PyWeakrefReference;
 
 use super::*;
+use crate::handle::asyncio::complete_asyncio_future;
 use crate::handle::asyncio::schedule_completion;
 use crate::handle::core::State;
 use crate::handle::outcome::ReconstructionFailurePolicy;
