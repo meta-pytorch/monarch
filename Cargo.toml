@@ -159,7 +159,7 @@ default-members = [
   "typeuri_macros",
   "wirevalue",
 ]
-resolver = "2"
+resolver = "3"
 
 [workspace.package]
 license = "BSD-3-Clause"
