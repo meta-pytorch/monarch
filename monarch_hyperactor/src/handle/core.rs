@@ -753,8 +753,20 @@ pub(super) async fn wait_arrival(core: Arc<Core>) {
 /// storing its value or error before returning. A result already stored, or
 /// producer loss, requires no GIL while waiting. The caller later schedules
 /// this outcome onto the loop with `call_soon_threadsafe`.
+///
+/// The fallback observer runs these two steps separately, so a release can end
+/// its wait for an observation (HDL-21). Tests use this composition.
+#[cfg(test)]
 pub(super) async fn wait_terminal(core: Arc<Core>) -> PyResult<Arc<PyResult<Py<PyAny>>>> {
-    match wait_observed(core).await {
+    settle_observed(wait_observed(core).await).await
+}
+
+/// Turn an observation into the Handle's final outcome: a stored result as
+/// is, producer loss as its error, and a claimed raw reply reconstructed on
+/// this Tokio worker. The fallback observer calls this after its releasable
+/// wait for an observation (HDL-21).
+pub(super) async fn settle_observed(observed: WaitOutcome) -> PyResult<Arc<PyResult<Py<PyAny>>>> {
+    match observed {
         WaitOutcome::Done(outcome) => Ok(outcome),
         WaitOutcome::Lost => Err(handle_producer_ended_error()),
         WaitOutcome::Reconstruct(claim) => {
