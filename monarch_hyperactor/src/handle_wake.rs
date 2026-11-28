@@ -45,6 +45,7 @@
 //! ```
 
 use std::collections::HashMap;
+use std::convert::Infallible;
 use std::iter;
 #[cfg(test)]
 use std::os::fd::AsFd;
@@ -77,6 +78,7 @@ use pyo3::sync::PyOnceLock;
 use pyo3::types::PyDict;
 use pyo3::types::PyTuple;
 use pyo3::types::PyWeakrefReference;
+use tokio::sync::oneshot;
 
 use crate::handle::LoopReadOutcome;
 use crate::handle::PyHandle;
@@ -140,6 +142,9 @@ struct Entry {
     /// The awaited `Handle`. Its value is read when the entry's token arrives,
     /// and set as the result of `fut`.
     handle: Py<PyHandle>,
+    /// Dropped with the entry, whichever path removes it, which releases this
+    /// await's native waiter (HDL-17, HDL-19). Nothing is ever sent on it.
+    release: oneshot::Sender<Infallible>,
 }
 
 impl Entry {
@@ -310,7 +315,8 @@ impl LoopWake {
 
     /// Record a pending await, `fut` waiting on `handle`, under a new token,
     /// and return the [`Notifier`] that its Tokio observer uses to report that
-    /// `handle` completed.
+    /// `handle` completed, with the [`Release`] that completes when the
+    /// entry's sender is dropped (HDL-17).
     ///
     /// Takes the bound `channel` rather than `&self` because the reaper needs a
     /// weak reference to the Python object the registry holds, and a `&self`
@@ -319,7 +325,7 @@ impl LoopWake {
         channel: &Bound<'_, LoopWake>,
         fut: &Bound<'_, PyAny>,
         handle: Py<PyHandle>,
-    ) -> PyResult<Notifier> {
+    ) -> PyResult<(Notifier, Release)> {
         let py = channel.py();
         let this = channel.get();
         // Checked, so a token is never reused.
@@ -337,11 +343,13 @@ impl LoopWake {
                 token,
             },
         )?;
+        let (release, released) = release_pair();
         this.insert(
             token,
             Entry {
                 fut: fut.clone().unbind(),
                 handle,
+                release,
             },
         );
         // Runs the reaper when `fut` is cancelled or completed. If the future
@@ -351,7 +359,7 @@ impl LoopWake {
             drop(this.take(token));
             return Err(err);
         }
-        Ok(this.notifier(token))
+        Ok((this.notifier(token), released))
     }
 
     /// All that the Tokio side gets for `token`: clones of the queue's sender
@@ -430,7 +438,7 @@ impl LoopWake {
         // A stale token: the reaper removed the entry because the await was
         // cancelled or settled. The entry is dropped after `take` releases
         // the lock.
-        let Some(entry) = self.take(token) else {
+        let Some(mut entry) = self.take(token) else {
             return Ok(());
         };
         // Already settled, for example cancelled but not yet reaped.
@@ -468,11 +476,16 @@ impl LoopWake {
                 // still waits, start a new native wait for that claim to settle
                 // or release, then restore the entry under the same token.
                 if entry.waiting(py) {
+                    // The new waiter gets its own release. Replacing the
+                    // sender drops the old one, whose waiter already returned
+                    // after notifying, so nothing else is released.
+                    let (release, released) = release_pair();
+                    entry.release = release;
                     entry
                         .handle
                         .bind(py)
                         .borrow()
-                        .notify_on_arrival(self.notifier(token));
+                        .notify_on_arrival(self.notifier(token), released);
                     // The new waiter may queue its token immediately, but the
                     // loop cannot consume it until this callback returns, after
                     // the entry has been restored.
@@ -680,9 +693,33 @@ impl Notifier {
     }
 }
 
+/// Ends a pending await's native wait once nobody can read its result.
+///
+/// The paired sender is held by whatever ends the await: the await's
+/// [`Entry`] on the pipe path, or the future's done callback on the fallback
+/// (HDL-17, HDL-21). Dropping the sender completes [`Release::released`]. It
+/// carries no value, and nothing is ever sent.
+pub(crate) struct Release(oneshot::Receiver<Infallible>);
+
+impl Release {
+    /// Complete once the paired sender has been dropped.
+    pub(crate) async fn released(self) {
+        // Nothing can be sent, so the receive ends only with the sender's
+        // drop, as an error.
+        let _ = self.0.await;
+    }
+}
+
+/// A sender and the [`Release`] it completes when dropped.
+pub(crate) fn release_pair() -> (oneshot::Sender<Infallible>, Release) {
+    let (tx, rx) = oneshot::channel();
+    (tx, Release(rx))
+}
+
 #[cfg(test)]
 mod tests {
     use std::ffi::CStr;
+    use std::time::Instant;
 
     use pyo3::IntoPyObjectExt;
     use pyo3::exceptions::PyOSError;
@@ -1014,7 +1051,9 @@ def base_done(fut):
     }
 
     // HDL-19: a loop dropped without being closed, while an await on a pending
-    // Handle with no value is registered, is freed by a collection.
+    // Handle with no value is registered, is freed by a collection. Freeing
+    // its channel releases the await's waiter, which drops the core and the
+    // write end before anything is published (HDL-17, HDL-20).
     #[test]
     fn unclosed_loop_with_a_pending_await_is_collected() {
         ensure_python();
@@ -1025,6 +1064,11 @@ def base_done(fut):
             let task = helper
                 .call_method1("await_in_task", (&event_loop, &handle))
                 .unwrap();
+            let waker = LoopWake::for_loop(py, &event_loop)
+                .unwrap()
+                .expect("a selector loop uses the pipe")
+                .get()
+                .waker_for_test();
             let loop_ref = PyWeakrefReference::new(&event_loop).unwrap();
             drop((task, event_loop, handle));
             collect_garbage(py);
@@ -1032,6 +1076,14 @@ def base_done(fut):
                 loop_ref.upgrade().is_none(),
                 "the collector should free the unclosed loop"
             );
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while Arc::strong_count(&waker) > 1 || tx.observer_count() > 0 {
+                assert!(
+                    Instant::now() < deadline,
+                    "the released waiter should drop its notifier and the core"
+                );
+                std::thread::sleep(Duration::from_millis(1));
+            }
             drop(tx);
         });
     }
@@ -1166,9 +1218,9 @@ def base_done(fut):
                 .unwrap();
             let healthy = event_loop.call_method0("create_future").unwrap();
             for (fut, value) in [(&broken, 1i64), (&healthy, 2)] {
-                LoopWake::register(&channel, fut, ready_handle(py, value))
-                    .unwrap()
-                    .notify();
+                let (notifier, _release) =
+                    LoopWake::register(&channel, fut, ready_handle(py, value)).unwrap();
+                notifier.notify();
             }
 
             channel.get().on_readable(py).unwrap();
@@ -1243,7 +1295,8 @@ def base_done(fut):
             let channel = Bound::new(py, LoopWake::try_new().unwrap()).unwrap();
             let register_ready = |value: i64| {
                 let fut = event_loop.call_method0("create_future").unwrap();
-                let notifier = LoopWake::register(&channel, &fut, ready_handle(py, value)).unwrap();
+                let (notifier, _release) =
+                    LoopWake::register(&channel, &fut, ready_handle(py, value)).unwrap();
                 (fut, notifier)
             };
 

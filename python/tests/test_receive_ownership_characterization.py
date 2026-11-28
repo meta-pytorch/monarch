@@ -5,6 +5,8 @@
 # LICENSE file in the root directory of this source tree.
 
 import _thread
+import asyncio
+import inspect
 import pickle
 import threading
 import time
@@ -70,6 +72,38 @@ def test_timed_out_recv_keeps_its_receive() -> None:
     assert pending.get(timeout=2) == 5
     sender.send(6)
     assert receiver.recv().get(timeout=2) == 6
+
+
+async def _await(fut: Any) -> Any:
+    return await fut
+
+
+@pytest.mark.timeout(10)
+def test_cancelling_one_await_keeps_a_retained_receive() -> None:
+    """Cancelling a task that awaits a receive leaves the receive running for a
+    caller that still holds its Future, so a second await on the same Future
+    reads the next message. Python can't see when a cancelled receive releases
+    the receiver; the native port witness covers a new receive."""
+    sender, receiver = Channel[int].open()
+    fut = receiver.recv()
+
+    async def main() -> int:
+        first = _await(fut)
+        task = asyncio.ensure_future(first)
+        for _ in range(100):
+            if inspect.getcoroutinestate(first) == inspect.CORO_SUSPENDED:
+                break
+            await asyncio.sleep(0)
+        assert inspect.getcoroutinestate(first) == inspect.CORO_SUSPENDED, (
+            "the first await should be pending before the cancel"
+        )
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        sender.send(7)
+        return await asyncio.wait_for(_await(fut), 2)
+
+    assert asyncio.run(main()) == 7
 
 
 @pytest.mark.timeout(10)
